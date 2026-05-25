@@ -1,14 +1,16 @@
 {
   "id": "org.asyar.memory",
   "name": "Memory",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "extension",
   "description": "Persistent cross-session memory for every Asyar AI agent.",
   "author": "Asyar",
   "icon": "🧠",
   "searchable": true,
   "asyarSdk": "^2.7.0",
-  "permissions": ["tools:register"],
+  "permissions": [
+    "tools:register"
+  ],
   "commands": [
     {
       "id": "open",
@@ -20,7 +22,9 @@
       "actions": []
     }
   ],
-  "background": { "main": "dist/worker.js" },
+  "background": {
+    "main": "dist/worker.js"
+  },
   "tools": [
     {
       "id": "memory_save",
@@ -29,14 +33,21 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "note": { "type": "string", "description": "The fact to remember, phrased in third person." },
+          "note": {
+            "type": "string",
+            "description": "The fact to remember, phrased in third person."
+          },
           "tags": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Optional short labels (≤5, ≤32 chars each)."
           }
         },
-        "required": ["note"]
+        "required": [
+          "note"
+        ]
       }
     },
     {
@@ -46,8 +57,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "tag": { "type": "string", "description": "Filter to entries that include this tag." },
-          "limit": { "type": "number", "description": "Max entries to return. Default 50, max 200." }
+          "tag": {
+            "type": "string",
+            "description": "Filter to entries that include this tag."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max entries to return. Default 50, max 200."
+          }
         }
       }
     },
@@ -58,10 +75,18 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "query": { "type": "string", "description": "Substring to match (case-insensitive)." },
-          "limit": { "type": "number", "description": "Max entries to return. Default 20, max 100." }
+          "query": {
+            "type": "string",
+            "description": "Substring to match (case-insensitive)."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max entries to return. Default 20, max 100."
+          }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       }
     },
     {
@@ -71,10 +96,19 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "description": "The id returned by memory_save / memory_list / memory_search." },
-          "note": { "type": "string", "description": "Replacement text, phrased in third person." }
+          "id": {
+            "type": "string",
+            "description": "The id returned by memory_save / memory_list / memory_search."
+          },
+          "note": {
+            "type": "string",
+            "description": "Replacement text, phrased in third person."
+          }
         },
-        "required": ["id", "note"]
+        "required": [
+          "id",
+          "note"
+        ]
       }
     },
     {
@@ -84,9 +118,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "description": "The id to delete." }
+          "id": {
+            "type": "string",
+            "description": "The id to delete."
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       }
     },
     {
@@ -96,10 +135,19 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "description": "The id to pin/unpin." },
-          "pinned": { "type": "boolean", "description": "true to pin, false to unpin." }
+          "id": {
+            "type": "string",
+            "description": "The id to pin/unpin."
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "true to pin, false to unpin."
+          }
         },
-        "required": ["id", "pinned"]
+        "required": [
+          "id",
+          "pinned"
+        ]
       }
     },
     {
