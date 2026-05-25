@@ -172,22 +172,6 @@
     return trimmed.slice(nl + 1).slice(0, 120).trim();
   }
 
-  // ── Action implementations ────────────────────────────────────────
-  // Tiny instrumentation helper: every action fires this so any silent
-  // failure (RPC unwired on the host, exception, etc.) surfaces both in
-  // the dev console and as a HUD the user actually sees.
-  async function runAction(name: string, fn: () => Promise<void>) {
-    console.debug(`[memory] action: ${name}`);
-    try {
-      await fn();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[memory] ${name} threw:`, err);
-      try { await feedback.showHUD(`${name} error: ${msg.slice(0, 80)}`); }
-      catch { /* HUD itself failed; nothing left to do */ }
-    }
-  }
-
   // ── Form helpers (snippets pattern) ───────────────────────────────
   function startCreate() {
     mode = 'create';
@@ -199,12 +183,6 @@
   }
 
   function startEdit(entry: MemoryEntry) {
-    console.debug('[memory] startEdit:', {
-      id: entry.id,
-      noteLen: entry.note.length,
-      notePreview: entry.note.slice(0, 60),
-      tagCount: entry.tags.length,
-    });
     mode = 'edit';
     formNote = entry.note;
     formTagsInput = entry.tags.join(' ');
@@ -276,138 +254,116 @@
     }
   }
 
+  // ── Action implementations ────────────────────────────────────────
   async function addMemory() {
-    return runAction('Add Memory', async () => {
-      startCreate();
-    });
+    startCreate();
   }
 
   async function editMemory() {
-    return runAction('Edit Memory', async () => {
-      if (!selected) {
-        await feedback.showHUD('⚠️ Select a memory first (↑↓ in the list)');
-        return;
-      }
-      startEdit(selected);
-    });
+    if (!selected) {
+      await feedback.showHUD('Select a memory first (↑↓ in the list)');
+      return;
+    }
+    startEdit(selected);
   }
 
   async function deleteMemory() {
-    return runAction('Delete Memory', async () => {
-      if (!selected) {
-        await feedback.showHUD('⚠️ Select a memory first (↑↓ in the list)');
-        return;
-      }
-      const preview = selected.note.slice(0, 40);
-      await context.request('memory.delete', { id: selected.id });
-      if (selectedIndex >= displayed.length - 1) {
-        selectedIndex = Math.max(0, displayed.length - 2);
-      }
-      await feedback.showHUD(`🗑️ Deleted: ${preview}`);
-    });
+    if (!selected) {
+      await feedback.showHUD('Select a memory first (↑↓ in the list)');
+      return;
+    }
+    const preview = selected.note.slice(0, 40);
+    await context.request('memory.delete', { id: selected.id });
+    if (selectedIndex >= displayed.length - 1) {
+      selectedIndex = Math.max(0, displayed.length - 2);
+    }
+    await feedback.showHUD(`Deleted: ${preview}`);
   }
 
   async function togglePinMemory() {
-    return runAction('Pin Memory', async () => {
-      if (!selected) {
-        await feedback.showHUD('⚠️ Select a memory first (↑↓ in the list)');
-        return;
-      }
-      const nextPinned = !selected.pinned;
-      const preview = selected.note.slice(0, 40);
-      await context.request('memory.pin', { id: selected.id, pinned: nextPinned });
-      await feedback.showHUD(nextPinned ? `📌 Pinned: ${preview}` : `📌 Unpinned: ${preview}`);
-    });
+    if (!selected) {
+      await feedback.showHUD('Select a memory first (↑↓ in the list)');
+      return;
+    }
+    const nextPinned = !selected.pinned;
+    const preview = selected.note.slice(0, 40);
+    await context.request('memory.pin', { id: selected.id, pinned: nextPinned });
+    await feedback.showHUD(nextPinned ? `📌 Pinned: ${preview}` : `Unpinned: ${preview}`);
   }
 
   async function copyMemory() {
-    return runAction('Copy Memory', async () => {
-      if (!selected) {
-        await feedback.showHUD('⚠️ Select a memory first (↑↓ in the list)');
-        return;
-      }
-      const text = selected.note;
-      // Try the modern API first; fall back to execCommand (works in many
-      // sandboxed iframe contexts where Permissions API denies clipboard).
-      let ok = false;
+    if (!selected) {
+      await feedback.showHUD('Select a memory first (↑↓ in the list)');
+      return;
+    }
+    const text = selected.note;
+    // Try the modern API first; fall back to execCommand for sandboxed
+    // iframe contexts where Permissions API denies clipboard.
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch { /* try fallback */ }
+    if (!ok) {
       try {
-        await navigator.clipboard.writeText(text);
-        ok = true;
-      } catch (err) {
-        console.warn('[memory] navigator.clipboard.writeText failed:', err);
-      }
-      if (!ok) {
-        try {
-          const ta = document.createElement('textarea');
-          ta.value = text;
-          ta.setAttribute('readonly', '');
-          ta.style.position = 'fixed';
-          ta.style.opacity = '0';
-          document.body.appendChild(ta);
-          ta.select();
-          ok = document.execCommand('copy');
-          ta.remove();
-        } catch (err) {
-          console.warn('[memory] execCommand("copy") fallback failed:', err);
-        }
-      }
-      await feedback.showHUD(ok ? `📋 Copied: ${text.slice(0, 40)}` : '❌ Copy failed — see dev console');
-    });
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+        ta.remove();
+      } catch { /* give up */ }
+    }
+    await feedback.showHUD(ok ? `Copied: ${text.slice(0, 40)}` : 'Copy failed');
   }
 
   async function exportMarkdown() {
-    return runAction('Export Markdown', async () => {
-      const md = toMarkdown(entries, new Date());
-      const today = new Date().toISOString().slice(0, 10);
-      const filename = `asyar-memory-${today}.md`;
-      // Try download via blob anchor click (may be blocked in some
-      // iframe sandbox contexts).
-      let ok = false;
-      try {
-        const blob = new Blob([md], { type: 'text/markdown' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        ok = true;
-      } catch (err) {
-        console.warn('[memory] markdown download failed:', err);
-      }
-      if (ok) {
-        await feedback.showHUD(`📥 Exported ${entries.length} memories → ${filename}`);
-      } else {
-        // Fall back: copy markdown to clipboard so user can paste it
-        // into a file editor themselves.
-        try { await navigator.clipboard.writeText(md); }
-        catch (err) { console.warn('[memory] markdown clipboard fallback failed:', err); }
-        await feedback.showHUD(`📥 Download blocked — markdown copied to clipboard (${entries.length} entries)`);
-      }
-    });
+    const md = toMarkdown(entries, new Date());
+    const today = new Date().toISOString().slice(0, 10);
+    const filename = `asyar-memory-${today}.md`;
+    // Try blob anchor download; fall back to clipboard if the sandbox
+    // blocks programmatic downloads.
+    let downloaded = false;
+    try {
+      const blob = new Blob([md], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      downloaded = true;
+    } catch { /* try clipboard fallback */ }
+    if (downloaded) {
+      await feedback.showHUD(`Exported ${entries.length} memories → ${filename}`);
+    } else {
+      try { await navigator.clipboard.writeText(md); } catch { /* */ }
+      await feedback.showHUD(`Download blocked — markdown copied to clipboard (${entries.length} entries)`);
+    }
   }
 
   async function forgetAll() {
-    return runAction('Forget All', async () => {
-      const count = entries.length;
-      if (count === 0) {
-        await feedback.showHUD('Nothing to forget.');
-        return;
-      }
-      const now = Date.now();
-      if (now - lastForgetAt > 5000) {
-        lastForgetAt = now;
-        await feedback.showHUD(
-          `⚠️ Forget all ${count} memories? ⌘K → Forget All again within 5s to confirm.`,
-        );
-        return;
-      }
-      await context.request('memory.clear', {});
-      lastForgetAt = 0;
-      await feedback.showHUD(`💥 Forgotten ${count} memories.`);
-    });
+    const count = entries.length;
+    if (count === 0) {
+      await feedback.showHUD('Nothing to forget.');
+      return;
+    }
+    const now = Date.now();
+    if (now - lastForgetAt > 5000) {
+      lastForgetAt = now;
+      await feedback.showHUD(
+        `Forget all ${count} memories? ⌘K → Forget All again within 5s to confirm.`,
+      );
+      return;
+    }
+    await context.request('memory.clear', {});
+    lastForgetAt = 0;
+    await feedback.showHUD(`Forgotten ${count} memories.`);
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────
@@ -738,8 +694,8 @@
   }
 
   .doc-item.selected {
-    background: #007aff;
-    color: white;
+    background: var(--accent-primary);
+    color: var(--text-on-accent, #fff);
   }
 
   .doc-title {
@@ -811,7 +767,7 @@
     color: var(--text-secondary);
     padding: 4px 8px;
     border-radius: 4px;
-    background: rgba(255, 200, 0, 0.12);
+    background: var(--warning-bg, rgba(255, 200, 0, 0.12));
   }
 
   .detail-content {
@@ -1005,10 +961,10 @@
   }
   .form-error {
     padding: 8px 12px;
-    background: rgba(255, 80, 80, 0.1);
-    border: 1px solid rgba(255, 80, 80, 0.3);
+    background: var(--error-bg, rgba(255, 80, 80, 0.1));
+    border: 1px solid var(--error-border, rgba(255, 80, 80, 0.3));
     border-radius: 6px;
-    color: #ff8080;
+    color: var(--error-text, #ff8080);
     font-size: 12px;
   }
   .form-footer {
@@ -1063,35 +1019,12 @@
   }
   .doc-list::-webkit-scrollbar-thumb,
   .detail-panel::-webkit-scrollbar-thumb {
-    background: rgba(150, 150, 150, 0.3);
+    background: var(--scrollbar-thumb, rgba(150, 150, 150, 0.3));
     border-radius: 10px;
   }
 
-  /* ── Dark mode (copied verbatim from Tauri Docs) ───────────────── */
-  @media (prefers-color-scheme: dark) {
-    .container {
-      color: #e0e0e0;
-      background: #1e1e1e;
-    }
-    .doc-list {
-      background: #1e1e1e;
-      border-right-color: #333;
-    }
-    .doc-item:hover {
-      background: #2a2a2a;
-    }
-    .detail-panel {
-      background: #161616;
-    }
-    .doc-header {
-      background: #1e1e1e;
-      border-bottom-color: #333;
-    }
-    .doc-path,
-    .pin-badge,
-    .detail-tag,
-    .detail-id {
-      background: #2a2a2a;
-    }
-  }
+  /* No @media (prefers-color-scheme: dark) block: Asyar's tokens.css
+     is dark-by-default and we consume only the --bg-*, --text-*,
+     --accent-*, --border-color CSS variables it exposes. Adding a
+     hardcoded dark-mode block would override the design tokens. */
 </style>

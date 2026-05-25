@@ -33,4 +33,25 @@ describe('update', () => {
     expect(next).toEqual([ENTRY]);
     expect(result).toEqual({ updated: false, error: 'note must be a non-empty string' });
   });
+
+  it('preserves existing tags when tags arg is omitted', () => {
+    const { next, result } = update([ENTRY], { id: 'id-1', note: 'new text' });
+    expect(next[0].tags).toEqual(ENTRY.tags);
+    expect(result).toEqual({ updated: true, id: 'id-1' });
+  });
+
+  it('replaces tags through normalizeTags when tags arg is provided', () => {
+    const { next, result } = update([ENTRY], {
+      id: 'id-1',
+      note: 'new text',
+      tags: ['  Food ', 'FOOD', 'PrEfS'],
+    });
+    expect(next[0].tags).toEqual(['food', 'prefs']);
+    expect(result).toEqual({ updated: true, id: 'id-1' });
+  });
+
+  it('clears tags when tags arg is an empty array', () => {
+    const { next } = update([ENTRY], { id: 'id-1', note: 'new', tags: [] });
+    expect(next[0].tags).toEqual([]);
+  });
 });
