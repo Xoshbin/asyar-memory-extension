@@ -1,0 +1,115 @@
+{
+  "id": "org.asyar.memory",
+  "name": "Memory",
+  "version": "1.0.0",
+  "type": "extension",
+  "description": "Persistent cross-session memory for every Asyar AI agent.",
+  "author": "Asyar",
+  "icon": "🧠",
+  "searchable": true,
+  "asyarSdk": "^2.7.0",
+  "permissions": ["tools:register"],
+  "commands": [
+    {
+      "id": "open",
+      "name": "Open Memory",
+      "description": "Browse, search, pin, and audit everything the AI remembers about you.",
+      "icon": "🧠",
+      "mode": "view",
+      "component": "DefaultView",
+      "actions": []
+    }
+  ],
+  "background": { "main": "dist/worker.js" },
+  "tools": [
+    {
+      "id": "memory_save",
+      "name": "Save memory",
+      "description": "Persist a fact about the user across every future conversation. CALL THIS PROACTIVELY — without being asked — whenever the user reveals a lasting fact about themselves, their preferences, their setup, their work, or their plans. Triggers include but are not limited to: 'my name is …', 'I am …', 'I prefer …', 'I use …', 'I work at / on …', 'I have …', 'remember (that) …', 'don't forget …', 'note that …', or any standalone declarative statement of identity / preference / context. If a user message contains multiple distinct facts, call memory_save once per fact rather than concatenating. `note` should be the bare fact in third-person, present tense (e.g. 'Prefers oat milk in coffee', NOT 'I prefer oat milk'). `tags` are optional short labels (trim + lowercase, max 5 per entry, max 32 chars each) — pick categories like 'personal', 'hardware', 'preferences', 'work', 'family'. Do NOT save trivial chitchat, jokes, or one-off context that won't be useful later.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "note": { "type": "string", "description": "The fact to remember, phrased in third person." },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Optional short labels (≤5, ≤32 chars each)."
+          }
+        },
+        "required": ["note"]
+      }
+    },
+    {
+      "id": "memory_list",
+      "name": "List memories",
+      "description": "Return every memory previously saved about the user. CALL THIS AT THE START of any conversation that could benefit from knowing the user — questions about themselves ('who am I?', 'what do you know about me?', 'what do you remember?'), requests for personalized advice or recommendations, anything where context about who the user is, what they use, what they prefer, or what they're working on would change your answer. When in doubt, call it. The list is cheap and gives you everything in one shot. Returns entries sorted pinned-first then newest-first; pinned entries are the user's most important facts. Optional `tag` filter narrows to a category; `limit` defaults to 50 (max 200).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tag": { "type": "string", "description": "Filter to entries that include this tag." },
+          "limit": { "type": "number", "description": "Max entries to return. Default 50, max 200." }
+        }
+      }
+    },
+    {
+      "id": "memory_search",
+      "name": "Search memories",
+      "description": "Look up memories by substring (case-insensitive over both note text AND tags). Use this when you suspect the user may have told you something specific in the past and you need to confirm — e.g. before recommending a coffee brand, search for 'coffee' to see what they've already said. Prefer memory_list when you want the full picture; use memory_search when you have a specific keyword. Default limit 20, max 100.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Substring to match (case-insensitive)." },
+          "limit": { "type": "number", "description": "Max entries to return. Default 20, max 100." }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "id": "memory_update",
+      "name": "Update memory",
+      "description": "Replace the text of an existing memory by id. Use this when the user CORRECTS a previously saved fact ('actually, I'm 41 not 40', 'I switched from oat milk to almond') rather than calling memory_save again (which would create a duplicate). First call memory_list or memory_search to find the id of the entry to update. `at` (creation time) is preserved so the original record stays in place.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The id returned by memory_save / memory_list / memory_search." },
+          "note": { "type": "string", "description": "Replacement text, phrased in third person." }
+        },
+        "required": ["id", "note"]
+      }
+    },
+    {
+      "id": "memory_delete",
+      "name": "Delete memory",
+      "description": "Delete a single memory by id. Use this when the user EXPLICITLY tells you to forget a specific fact ('forget that I use a Mac', 'don't remember my old address anymore'). Idempotent — calling with an unknown id returns `{ deleted: false }` and is not an error. First call memory_list or memory_search to find the right id.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The id to delete." }
+        },
+        "required": ["id"]
+      }
+    },
+    {
+      "id": "memory_pin",
+      "name": "Pin or unpin memory",
+      "description": "Mark a memory as pinned (or unpin one). Pinned memories are never auto-evicted by the 1000-entry cap, so use this for the user's MOST important facts — their identity, lifelong preferences, critical context they would never want forgotten. Call when the user says 'always remember …', 'never forget …', or similar emphasis.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The id to pin/unpin." },
+          "pinned": { "type": "boolean", "description": "true to pin, false to unpin." }
+        },
+        "required": ["id", "pinned"]
+      }
+    },
+    {
+      "id": "memory_clear",
+      "name": "Clear all memories",
+      "description": "DELETE EVERYTHING. Wipes every memory including pinned ones. This is destructive and irreversible. Before calling this tool you MUST ask the user out loud, in plain words: 'Are you sure you want me to forget everything I know about you? This cannot be undone.' Only call after they confirm in the next message with a clear yes ('yes', 'go ahead', 'do it', 'confirm'). Never call this tool on the same turn the user mentioned it — always wait for the explicit follow-up confirmation.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
