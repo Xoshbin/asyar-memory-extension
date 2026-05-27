@@ -629,10 +629,6 @@
 </div>
 
 <style>
-  /* ── Force the iframe document to fill its parent so the split
-        panes can use 100% height. The launcher mounts the view in
-        an iframe sized by the chrome, but #app / body / html default
-        to auto-height which collapses everything below content. */
   :global(html, body) {
     height: 100%;
     margin: 0;
@@ -643,7 +639,6 @@
     width: 100%;
   }
 
-  /* ── Container (matches Tauri Docs verbatim) ───────────────────── */
   .container {
     width: 100%;
     height: 100%;
@@ -651,7 +646,7 @@
     flex-direction: column;
     font-family: var(--font-ui);
     color: var(--text-primary);
-    background: var(--bg-primary);
+    background: transparent;
   }
 
   .split-view {
@@ -661,47 +656,56 @@
     overflow: hidden;
   }
 
-  /* ── Left list (copied verbatim from Tauri Docs) ───────────────── */
   .doc-list {
     width: 280px;
     min-width: 220px;
     overflow-y: auto;
-    border-right: 1px solid var(--border-color);
-    padding: 4px 0;
-    background: var(--bg-primary);
+    border-right: 1px solid var(--separator);
+    padding: var(--space-1) 0;
+    background: transparent;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+  .doc-list:focus-visible {
     outline: none;
+    box-shadow: inset var(--shadow-focus);
   }
 
   .section-header {
-    padding: var(--space-4) var(--space-5) var(--space-2);
+    padding: var(--space-3) var(--space-6) var(--space-1);
     font-size: var(--font-size-xs);
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
     color: var(--text-tertiary);
+    user-select: none;
   }
 
   .doc-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
     padding: var(--space-3) var(--space-5);
-    margin: 1px 6px;
-    border-radius: var(--radius-sm);
+    margin: 0 var(--space-2) 1px;
+    border-radius: var(--radius-xl);
     cursor: default;
     transition: background var(--transition-fast);
   }
 
   .doc-item:hover {
-    background: var(--hover-bg, #f5f5f5);
+    background: var(--bg-hover);
   }
 
   .doc-item.selected {
-    background: var(--accent-primary);
-    color: var(--text-on-accent, #fff);
+    background: var(--bg-selected);
+    box-shadow: inset 0 0 2px 0.5px var(--kbd-rim);
   }
 
   .doc-title {
-    font-size: 13px;
+    font-size: var(--font-size-md);
     font-weight: 500;
     line-height: 1.3;
+    color: var(--text-primary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -710,76 +714,74 @@
   .doc-desc {
     font-size: var(--font-size-xs);
     line-height: 1.3;
-    margin-top: 2px;
-    opacity: 0.7;
+    color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .doc-item.selected .doc-desc {
-    opacity: 0.85;
-  }
-
-  /* ── Right detail panel (copied verbatim from Tauri Docs) ──────── */
   .detail-panel {
     flex: 1;
     overflow-y: auto;
-    background: var(--bg-secondary, #fafafa);
+    background: transparent;
     display: flex;
     flex-direction: column;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
   }
 
   .doc-header {
-    background: var(--bg-primary);
-    padding: 24px 32px 16px;
-    border-bottom: 1px solid var(--border, #e5e5e5);
+    background: transparent;
+    padding: var(--space-8) var(--space-9) var(--space-6);
+    border-bottom: 1px solid var(--separator);
     position: sticky;
     top: 0;
     z-index: 10;
   }
 
   .doc-header h2 {
-    margin: 0 0 8px 0;
-    font-size: 20px;
+    margin: 0 0 var(--space-3);
+    font-size: var(--font-size-2xl);
     font-weight: 600;
     line-height: 1.3;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
   }
 
   .doc-header .meta {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-5);
   }
 
   .doc-path {
-    font-size: 13px;
+    font-size: var(--font-size-md);
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    background: var(--bg-tertiary, #f0f0f0);
-    padding: 4px 8px;
-    border-radius: 4px;
+    background: var(--bg-tertiary);
+    padding: var(--space-1) var(--space-3);
+    border-radius: var(--radius-xs);
   }
 
   .pin-badge {
-    font-size: 12px;
-    color: var(--text-secondary);
-    padding: 4px 8px;
-    border-radius: 4px;
-    background: var(--warning-bg, rgba(255, 200, 0, 0.12));
+    font-size: var(--font-size-sm);
+    color: var(--accent-warning);
+    padding: var(--space-1) var(--space-3);
+    border-radius: var(--radius-xs);
+    background: color-mix(in srgb, var(--accent-warning) 12%, transparent);
   }
 
   .detail-content {
-    padding: 28px 32px;
+    padding: var(--space-8) var(--space-9);
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: var(--space-7);
   }
 
   .full-note {
     margin: 0;
-    font-size: 15px;
+    font-size: var(--font-size-lg);
     line-height: 1.6;
     color: var(--text-primary);
     white-space: pre-wrap;
@@ -789,73 +791,74 @@
   .detail-section {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--space-3);
   }
 
   .detail-section-label {
     font-size: var(--font-size-xs);
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
     color: var(--text-tertiary);
   }
 
   .detail-tags {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: var(--space-3);
   }
 
   .detail-tag {
-    font-size: 13px;
-    color: var(--accent-primary, #007aff);
-    background: var(--bg-tertiary, #f0f0f0);
-    padding: 3px 9px;
-    border-radius: 4px;
+    font-size: var(--font-size-md);
+    color: var(--accent-primary);
+    background: var(--asyar-brand-muted);
+    padding: 2px var(--space-3);
+    border-radius: var(--radius-xs);
   }
 
   .detail-id {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    background: var(--bg-tertiary, #f0f0f0);
-    padding: 4px 8px;
-    border-radius: 4px;
+    background: var(--bg-tertiary);
+    padding: var(--space-1) var(--space-3);
+    border-radius: var(--radius-xs);
     word-break: break-all;
     align-self: flex-start;
   }
 
-  /* ── Empty states (copied verbatim from Tauri Docs) ────────────── */
   .empty-state {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     height: 100%;
-    gap: 8px;
-    color: var(--text-tertiary);
-    font-size: 13px;
-    padding: 40px 20px;
+    gap: var(--space-3);
+    color: var(--text-secondary);
+    font-size: var(--font-size-md);
+    padding: var(--space-10) var(--space-7);
     text-align: center;
   }
 
   .empty-icon {
-    font-size: 28px;
-    opacity: 0.5;
+    font-size: var(--font-size-3xl);
+    opacity: 0.6;
   }
 
   .empty-hint {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
+    color: var(--text-tertiary);
     line-height: 1.5;
   }
 
   .empty-hint kbd {
-    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-    font-size: 11px;
-    background: var(--bg-secondary, rgba(255,255,255,0.06));
-    border: 1px solid var(--border-color);
-    border-radius: 3px;
-    padding: 1px 5px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 0.5px solid var(--border-color);
+    border-radius: var(--radius-xs);
+    padding: 1px var(--space-2);
   }
 
   .detail-empty {
@@ -864,167 +867,163 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    gap: 12px;
-    color: var(--text-tertiary, #aaa);
+    gap: var(--space-5);
+    color: var(--text-secondary);
     font-size: var(--font-size-base);
   }
 
   .detail-empty-icon {
-    font-size: 36px;
-    opacity: 0.4;
+    font-size: var(--font-size-display);
+    opacity: 0.5;
   }
 
-  /* ── Inline form (snippets-pattern) ────────────────────────────── */
   .form-panel {
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: var(--bg-primary);
+    background: transparent;
   }
   .form-header {
-    padding: 24px 32px 0;
+    padding: var(--space-8) var(--space-9) 0;
     flex-shrink: 0;
   }
   .form-title {
-    margin: 0 0 4px;
-    font-size: 20px;
+    margin: 0 0 var(--space-1);
+    font-size: var(--font-size-2xl);
     font-weight: 600;
     color: var(--text-primary);
+    letter-spacing: -0.01em;
   }
   .form-subtitle {
-    margin: 0 0 18px;
-    font-size: 12px;
-    color: var(--text-tertiary, var(--text-secondary));
+    margin: 0 0 var(--space-6);
+    font-size: var(--font-size-sm);
+    color: var(--text-tertiary);
   }
   .form-subtitle-id {
-    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-    font-size: 11px;
-    background: var(--bg-tertiary, rgba(255,255,255,0.05));
-    padding: 1px 5px;
-    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-xs);
   }
   .form-body {
     flex: 1;
     overflow-y: auto;
-    padding: 0 32px 24px;
+    padding: 0 var(--space-9) var(--space-8);
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: var(--space-7);
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
   }
   .form-field {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--space-2);
   }
   .form-label {
-    font-size: 12px;
+    font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
   }
   .form-hint {
     font-weight: 400;
     text-transform: none;
     letter-spacing: 0;
-    color: var(--text-tertiary, var(--text-secondary));
-    margin-left: 4px;
+    color: var(--text-tertiary);
+    margin-left: var(--space-1);
   }
   .form-help {
-    margin: 4px 0 0;
-    font-size: 11px;
-    color: var(--text-tertiary, var(--text-secondary));
+    margin: var(--space-1) 0 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-tertiary);
     line-height: 1.4;
   }
   .field-input,
   .field-textarea {
     width: 100%;
-    padding: 8px 10px;
-    background: var(--bg-secondary, rgba(255,255,255,0.04));
-    border: 1px solid var(--border-color, var(--separator));
-    border-radius: 6px;
+    padding: 7px var(--space-4);
+    background: var(--bg-secondary-full-opacity);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
     color: var(--text-primary);
-    font-size: 13px;
-    font-family: inherit;
+    font-size: var(--font-size-base);
+    font-family: var(--font-ui);
     box-sizing: border-box;
     line-height: 1.5;
+    outline: none;
+    transition: border-color var(--transition-fast);
   }
   .field-textarea {
     resize: vertical;
     min-height: 100px;
   }
+  .field-input::placeholder,
+  .field-textarea::placeholder {
+    color: var(--text-tertiary);
+  }
   .field-input:focus,
   .field-textarea:focus {
-    outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 1px var(--accent-primary);
   }
   .form-error {
-    padding: 8px 12px;
-    background: var(--error-bg, rgba(255, 80, 80, 0.1));
-    border: 1px solid var(--error-border, rgba(255, 80, 80, 0.3));
-    border-radius: 6px;
-    color: var(--error-text, #ff8080);
-    font-size: 12px;
+    padding: var(--space-3) var(--space-5);
+    background: color-mix(in srgb, var(--accent-danger) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-danger) 30%, transparent);
+    border-radius: var(--radius-sm);
+    color: var(--accent-danger);
+    font-size: var(--font-size-sm);
   }
   .form-footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 14px 32px;
-    border-top: 1px solid var(--border-color, var(--separator));
+    gap: var(--space-5);
+    padding: var(--space-5-5) var(--space-9);
+    border-top: 1px solid var(--separator);
     flex-shrink: 0;
   }
   .form-shortcut-hint {
-    font-size: 11px;
-    color: var(--text-tertiary, var(--text-secondary));
+    font-size: var(--font-size-xs);
+    color: var(--text-tertiary);
   }
   .form-buttons {
     display: flex;
-    gap: 8px;
+    gap: var(--space-3);
   }
   .btn-primary,
   .btn-secondary {
-    padding: 6px 14px;
-    border-radius: 6px;
-    font-size: 13px;
+    padding: var(--space-2) var(--space-6);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-md);
     font-weight: 500;
     cursor: pointer;
-    border: 1px solid transparent;
-    font-family: inherit;
+    font-family: var(--font-ui);
+    transition: background var(--transition-fast), opacity var(--transition-fast);
   }
   .btn-primary {
-    background: var(--accent-primary, #007aff);
+    background: var(--accent-primary);
     color: white;
+    border: none;
   }
-  .btn-primary:hover { filter: brightness(1.05); }
+  .btn-primary:hover { opacity: 0.9; }
+  .btn-primary:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-focus);
+  }
   .btn-secondary {
     background: transparent;
     color: var(--text-primary);
-    border-color: var(--border-color, var(--separator));
+    border: 1px solid var(--border-color);
   }
   .btn-secondary:hover {
-    background: var(--bg-secondary, rgba(255,255,255,0.05));
+    background: var(--bg-hover);
   }
-
-  /* ── Scrollbars (copied verbatim from Tauri Docs) ──────────────── */
-  .doc-list::-webkit-scrollbar,
-  .detail-panel::-webkit-scrollbar {
-    width: 6px;
+  .btn-secondary:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-focus);
   }
-  .doc-list::-webkit-scrollbar-track,
-  .detail-panel::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  .doc-list::-webkit-scrollbar-thumb,
-  .detail-panel::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb, rgba(150, 150, 150, 0.3));
-    border-radius: 10px;
-  }
-
-  /* No @media (prefers-color-scheme: dark) block: Asyar's tokens.css
-     is dark-by-default and we consume only the --bg-*, --text-*,
-     --accent-*, --border-color CSS variables it exposes. Adding a
-     hardcoded dark-mode block would override the design tokens. */
 </style>

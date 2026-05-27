@@ -7,7 +7,7 @@
   "author": "Asyar",
   "icon": "🧠",
   "searchable": true,
-  "asyarSdk": "^2.7.0",
+  "asyarSdk": "^3.0.1",
   "permissions": [
     "tools:register"
   ],
