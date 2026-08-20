@@ -472,11 +472,6 @@
     for (const action of viewActions) {
       actions.registerAction(action);
     }
-    cleanup.push(() => {
-      for (const action of viewActions) {
-        actions.unregisterAction(action.id);
-      }
-    });
 
     return () => {
       active = false;
