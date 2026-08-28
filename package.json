@@ -1,6 +1,6 @@
 {
   "name": "org.asyar.memory",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "description": "Persistent cross-session memory for every Asyar AI agent",
   "type": "module",
   "scripts": {

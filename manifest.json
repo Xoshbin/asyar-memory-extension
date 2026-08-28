@@ -1,7 +1,7 @@
 {
   "id": "org.asyar.memory",
   "name": "Memory",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "type": "extension",
   "description": "Persistent cross-session memory for every Asyar AI agent.",
   "author": "Asyar",
