@@ -14,7 +14,7 @@
   "commands": [
     {
       "id": "open",
-      "name": "Open Memory",
+      "name": "Memory",
       "description": "Browse, search, pin, and audit everything the AI remembers about you.",
       "icon": "🧠",
       "mode": "view",
