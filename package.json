@@ -1,6 +1,6 @@
 {
   "name": "org.asyar.memory",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Persistent cross-session memory for every Asyar AI agent",
   "type": "module",
   "scripts": {
@@ -16,7 +16,7 @@
     "svelte": "^5.0.0"
   },
   "devDependencies": {
-    "asyar-sdk": "workspace:*",
+    "asyar-sdk": "^4.15.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@types/rollup-plugin-css-only": "^3.1.2",
     "typescript": "^5.0.0",
