@@ -16,7 +16,6 @@
       "id": "open",
       "name": "Memory",
       "description": "Browse, search, pin, and audit everything the AI remembers about you.",
-      "icon": "🧠",
       "mode": "view",
       "component": "DefaultView",
       "actions": []
