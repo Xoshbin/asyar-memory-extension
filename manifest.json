@@ -5,9 +5,9 @@
   "type": "extension",
   "description": "Persistent cross-session memory for every Asyar AI agent.",
   "author": "Asyar",
-  "icon": "🧠",
+  "icon": "assets/icon.png",
   "searchable": true,
-  "asyarSdk": "^4.15.0",
+  "asyarSdk": "^4.17.0",
   "permissions": [
     "tools:register"
   ],
