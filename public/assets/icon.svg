@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="32 32 448 448">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#10B981"/>
@@ -21,8 +21,8 @@
   <rect x="32" y="32" width="448" height="448" rx="104" fill="url(#bg)"/>
   <rect x="32" y="32" width="448" height="448" rx="104" fill="url(#topSheen)"/>
   <rect x="33" y="33" width="446" height="446" rx="103" fill="none" stroke="url(#specularRim)" stroke-width="2"/>
-
-  <g filter="url(#shadow)">
+  <g transform="translate(-102.400 -102.400) scale(1.4)">
+<g filter="url(#shadow)">
     <!-- Geometric Neural Brain Outline (Clean crisp white) -->
     <!-- Left Hemisphere -->
     <path d="M 246, 170 C 200, 165 160, 200 160, 250 C 160, 285 185, 315 215, 325 C 220, 345 235, 355 246, 355 Z"
@@ -44,5 +44,6 @@
     <line x1="302" y1="225" x2="266" y2="245" stroke="#047857" stroke-width="3" stroke-linecap="round"/>
     <line x1="195" y1="280" x2="246" y2="275" stroke="#047857" stroke-width="3" stroke-linecap="round"/>
     <line x1="317" y1="280" x2="266" y2="275" stroke="#047857" stroke-width="3" stroke-linecap="round"/>
+  </g>
   </g>
 </svg>
