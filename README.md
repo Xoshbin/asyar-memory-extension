@@ -12,21 +12,21 @@ the memory store lives only inside this extension's sandbox.
 
 The extension exposes **7 tools** to AI agents:
 
-| Tool             | What the agent uses it for                                 |
-|------------------|------------------------------------------------------------|
-| `memory_save`    | Save a fact about the user — proactive, no need to be asked |
-| `memory_list`    | Pull everything saved (call at the start of a personal chat) |
-| `memory_search`  | Substring search over notes and tags                       |
-| `memory_update`  | Correct an existing memory by id                           |
-| `memory_delete`  | Forget a specific memory                                   |
-| `memory_pin`     | Pin (or unpin) a memory — pinned never auto-evict          |
-| `memory_clear`   | Wipe everything (asks the user for confirmation first)     |
+| Tool            | What the agent uses it for                                   |
+| --------------- | ------------------------------------------------------------ |
+| `memory_save`   | Save a fact about the user — proactive, no need to be asked  |
+| `memory_list`   | Pull everything saved (call at the start of a personal chat) |
+| `memory_search` | Substring search over notes and tags                         |
+| `memory_update` | Correct an existing memory by id                             |
+| `memory_delete` | Forget a specific memory                                     |
+| `memory_pin`    | Pin (or unpin) a memory — pinned never auto-evict            |
+| `memory_clear`  | Wipe everything (asks the user for confirmation first)       |
 
 Each tool description is written in directive language so the LLM
 knows **when** to call it without needing custom system-prompt
-instructions. For example, `memory_list` tells the model: *"call this
+instructions. For example, `memory_list` tells the model: _"call this
 at the start of any conversation that could benefit from knowing the
-user."*
+user."_
 
 ## What you see
 
@@ -34,39 +34,49 @@ Opening the **Memory** command surfaces a clipboard-history-style two
 pane view:
 
 ```
-┌────────────────────┬─────────────────────────────────────────┐
-│ PINNED             │                                          │
-│  Likes oat milk    │  Likes oat milk in coffee                │
-│  May 25  #prefs    │  ──────────────────────────              │
-│                    │   25 May 2026 at 14:32   📌 Pinned       │
-│ TODAY              │                                          │
-│  Brother's bday    │  TAGS                                    │
-│  May 25  #family   │   #preferences  #food                    │
-│                    │                                          │
-│ YESTERDAY          │  ID                                      │
-│  Khoshbin (40)     │   c71acf9b-963f-44e1-9141-…              │
-│  May 24  #personal │                                          │
-└────────────────────┴─────────────────────────────────────────┘
+┌──────────────────────┬───────────────────────────────────────┐
+│ Pinned               │  2h ago · 16 November 2026 at 09:41    │
+│  📌 Likes oat milk   │                                        │
+│  #preferences   2h   │  Likes **oat milk** in coffee          │
+│                      │                                        │
+│ Today                │  #preferences  #food                  │
+│  Brother's birthday  │  ──────────────────────────────────────│
+│  #family        5h   │  ⏎ Copy   ⌘E Edit   ⌘⇧P Pin   ⌃X Delete│
+└──────────────────────┴───────────────────────────────────────┘
 ```
 
 Entries are grouped into date buckets (Pinned / Today / Yesterday /
-This week / This month / Earlier) and sorted newest-first within each
-bucket. The launcher's main search bar filters the list live (no
-in-view search field).
+This week / Earlier) and sorted newest-first within each bucket. The
+launcher's main search bar filters the list live (no in-view search
+field), and clicking a tag pill in the detail pane filters to it.
+
+Notes render as markdown — headings, lists, quotes, fenced code, links
+and inline `#tags` — in the detail pane. A note with no markdown reads
+as plain prose.
 
 ## Actions (⌘K)
 
-While the view is open, ⌘K surfaces these view-scoped commands:
+While the view is open, ⌘K surfaces these view-scoped commands, and
+their declared shortcuts work without opening the panel:
 
-- **➕ Add Memory** — opens a form with a Memory textarea + Tags input
-- **✏️ Edit Memory** — opens the same form pre-filled with the selected entry
-- **🗑️ Delete Memory** — removes the selected entry
-- **📌 Pin or Unpin Memory** — toggles pin
-- **📋 Copy Memory** — copies the selected note text (with execCommand fallback)
-- **📥 Export as Markdown** — downloads every memory as one `.md` file
-- **💥 Forget All Memories** — two-step within 5s to confirm wipe
+| Action                  | Shortcut | What it does                                      |
+| ----------------------- | -------- | ------------------------------------------------- |
+| **Add memory**          | `⌘N`     | Inline form: Memory textarea + Tags input         |
+| **Edit memory**         | `⌘E`     | Same form, pre-filled with the selected entry     |
+| **Pin or unpin memory** | `⌘⇧P`    | Toggle pin (pinned entries never auto-evict)      |
+| **Copy memory**         | `⏎`      | Copy the selected note, then dismiss the launcher |
+| **Copy as markdown**    | `⌘⇧C`    | Copy the note plus its `#tags`                    |
+| **Delete memory**       | `⌃X`     | Confirm, then remove the selected entry           |
+| **Export as markdown**  | —        | Download every memory as one `.md` file           |
+| **Clear all memories**  | `⌃⇧X`    | Confirm, then wipe everything including pinned    |
 
-Form shortcuts: **⌘↵** to save, **Esc** to cancel.
+Shortcuts are declared in Asyar's canonical `Mod+N` form, so Windows
+and Linux render and bind `Ctrl` instead of `⌘`. `⌘C`, `⌘P`, `⌘⌫` and
+`⌘⇧⌫` are reserved by the launcher for text editing, the search-bar
+accessory and list navigation, so copy-in-view, pin and delete use the
+approved alternatives above.
+
+Form shortcuts: `⌘⏎` to save, `Esc` to cancel.
 
 ## Permissions
 
@@ -86,12 +96,12 @@ Single state key `memory.entries` (SQLite, scoped per-extension):
 
 ```ts
 interface MemoryEntry {
-  id: string         // crypto.randomUUID()
-  note: string       // raw text
-  at: number         // ms epoch — creation time
-  tags: string[]     // trim + lowercase, ≤5 items, ≤32 chars each
-  pinned: boolean
-  source?: string    // reserved
+  id: string; // crypto.randomUUID()
+  note: string; // raw text
+  at: number; // ms epoch — creation time
+  tags: string[]; // trim + lowercase, ≤5 items, ≤32 chars each
+  pinned: boolean;
+  source?: string; // reserved
 }
 ```
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import type {
     ExtensionContext,
     ExtensionStateProxy,
@@ -9,56 +9,73 @@
   } from 'asyar-sdk/view';
   import { ActionContext } from 'asyar-sdk/view';
 
-  const EXTENSION_ID = 'org.asyar.memory';
   import { STATE_KEYS, type MemoryEntry } from '../stateKeys';
   import { toMarkdown } from '../lib/markdown';
   import { normalizeTags } from '../lib/normalize';
+  import { renderMarkdown } from '../lib/renderMarkdown';
 
-  interface Props { context: ExtensionContext; }
+  const EXTENSION_ID = 'org.asyar.memory';
+
+  interface Props {
+    context: ExtensionContext;
+  }
   let { context }: Props = $props();
 
   const stateProxy = $derived(context.getService<ExtensionStateProxy>('state'));
   const feedback = $derived(context.getService<IFeedbackService>('feedback'));
+  const actions = $derived(context.getService<IActionService>('actions'));
+
+  // Platform-aware keycaps. The launcher binds `Mod` itself; this is only the
+  // hint strip inside our own pane, so it has to spell the host platform out.
+  const IS_MAC = /mac/i.test(navigator.userAgent);
+  const HINT = {
+    copy: '⏎',
+    edit: IS_MAC ? '⌘E' : 'Ctrl+E',
+    pin: IS_MAC ? '⌘⇧P' : 'Ctrl+Shift+P',
+    delete: IS_MAC ? '⌃X' : 'Ctrl+X',
+    save: IS_MAC ? '⌘⏎' : 'Ctrl+Enter',
+  };
 
   let entries = $state<MemoryEntry[]>([]);
   let searchText = $state('');
+  let tagFilter = $state<string | null>(null);
   let selectedIndex = $state(0);
-  let lastForgetAt = $state(0);
-  let listContainer: HTMLDivElement | undefined = $state();
 
-  // ── Form mode (snippets-style: 'view' | 'create' | 'edit') ───────
-  // When mode !== 'view' the right pane shows an inline form instead
-  // of the detail display. Add/Edit actions enter this mode.
+  // 'view' shows the rendered memory; 'create'/'edit' swap the right pane for
+  // the inline form (snippets pattern) instead of opening a dialog.
   let mode = $state<'view' | 'create' | 'edit'>('view');
   let formNote = $state('');
-  let formTagsInput = $state('');
+  let formTags = $state('');
   let formError = $state<string | null>(null);
   let editingId = $state<string | null>(null);
-  let formNoteEl: HTMLTextAreaElement | undefined = $state();
+  let saving = $state(false);
 
-  // Pipeline: entries → (search filter) → grouped (date buckets, sorted
-  // within bucket by `at` desc) → displayed (flat in render order).
-  // `selected` MUST come from `displayed` so it matches the rendered
-  // row at `selectedIndex` — using `filtered` here would resolve to a
-  // different entry once date-bucket sorting reorders things.
-  const searchFiltered = $derived(filterEntries(entries, searchText));
-  const grouped = $derived(groupByBucket(searchFiltered));
-  const displayed = $derived(grouped.flatMap((g) => g.entries));
+  let listEl = $state<HTMLDivElement>();
+  let noteEl = $state<HTMLTextAreaElement>();
+
+  // Pipeline: entries → (search + tag filter) → date buckets → flat render
+  // order. `selected` comes from `displayed` so it always matches the row
+  // drawn at `selectedIndex`.
+  const matched = $derived(filterEntries(entries, searchText, tagFilter));
+  const grouped = $derived(groupByBucket(matched));
+  const displayed = $derived(grouped.flatMap((group) => group.entries));
+  // A row's flat index is read in the template; a map keeps that O(1) so
+  // filtering a 1000-entry list never turns into a quadratic render pass.
+  const indexById = $derived(new Map(displayed.map((entry, index) => [entry.id, index])));
   const selected = $derived(displayed[selectedIndex] ?? null);
+  const selectedBody = $derived(selected ? renderMarkdown(selected.note) : '');
+  const editingEntry = $derived(
+    editingId ? (entries.find((entry) => entry.id === editingId) ?? null) : null,
+  );
 
-  function filterEntries(rows: MemoryEntry[], text: string): MemoryEntry[] {
-    if (!text.trim()) return rows;
-    const needle = text.trim().toLowerCase();
-    return rows.filter(
-      (e) =>
-        e.note.toLowerCase().includes(needle) ||
-        e.tags.some((t) => t.includes(needle)),
-    );
+  // ── Date buckets ───────────────────────────────────────────────────
+  type Bucket = 'Pinned' | 'Today' | 'Yesterday' | 'This week' | 'Earlier';
+  const BUCKET_ORDER: Bucket[] = ['Pinned', 'Today', 'Yesterday', 'This week', 'Earlier'];
+
+  interface Group {
+    name: Bucket;
+    entries: MemoryEntry[];
   }
-
-  // ── Date bucketing for section headers (clipboard-history style) ──
-  type Bucket = 'Pinned' | 'Today' | 'Yesterday' | 'This week' | 'This month' | 'Earlier';
-  const BUCKET_ORDER: Bucket[] = ['Pinned', 'Today', 'Yesterday', 'This week', 'This month', 'Earlier'];
 
   function bucketFor(entry: MemoryEntry): Bucket {
     if (entry.pinned) return 'Pinned';
@@ -66,561 +83,800 @@
     today.setHours(0, 0, 0, 0);
     const day = new Date(entry.at);
     day.setHours(0, 0, 0, 0);
-    const diff = Math.round((today.getTime() - day.getTime()) / 86_400_000);
-    if (diff <= 0) return 'Today';
-    if (diff === 1) return 'Yesterday';
-    if (diff < 7) return 'This week';
-    const now = new Date();
-    if (
-      day.getMonth() === now.getMonth() &&
-      day.getFullYear() === now.getFullYear()
-    ) return 'This month';
+    const days = Math.round((today.getTime() - day.getTime()) / 86_400_000);
+    if (days <= 0) return 'Today';
+    if (days === 1) return 'Yesterday';
+    if (days < 7) return 'This week';
     return 'Earlier';
   }
 
-  interface Group { name: Bucket; entries: MemoryEntry[]; }
-
   function groupByBucket(rows: MemoryEntry[]): Group[] {
-    const map = new Map<Bucket, MemoryEntry[]>();
-    for (const r of rows) {
-      const b = bucketFor(r);
-      if (!map.has(b)) map.set(b, []);
-      map.get(b)!.push(r);
+    const buckets = new Map<Bucket, MemoryEntry[]>();
+    for (const row of rows) {
+      const name = bucketFor(row);
+      const bucket = buckets.get(name);
+      if (bucket) bucket.push(row);
+      else buckets.set(name, [row]);
     }
-    // Sort each bucket newest-first.
-    for (const arr of map.values()) {
-      arr.sort((a, b) => b.at - a.at);
-    }
-    return BUCKET_ORDER.filter((b) => map.has(b)).map((b) => ({
-      name: b,
-      entries: map.get(b)!,
+    for (const bucket of buckets.values()) bucket.sort((a, b) => b.at - a.at);
+    return BUCKET_ORDER.filter((name) => buckets.has(name)).map((name) => ({
+      name,
+      entries: buckets.get(name)!,
     }));
   }
 
-  function flatIndex(groupIdx: number, itemIdx: number): number {
-    let idx = 0;
-    for (let g = 0; g < groupIdx; g++) idx += grouped[g].entries.length;
-    return idx + itemIdx;
-  }
-
-  // ── #tag parsing for Add Memory ──────────────────────────────────
-  function parseNoteAndTags(input: string): { note: string; tags: string[] } {
-    const tagPattern = /(?:^|\s)#([\w-]+)/g;
-    const matches = Array.from(input.matchAll(tagPattern), (m) => m[1]);
-    const note = input.replace(/(?:^|\s)#[\w-]+/g, ' ').replace(/\s+/g, ' ').trim();
-    return { note, tags: normalizeTags(matches) };
-  }
-
-  // ── Postmessage listener (launcher → view) ───────────────────────
-  function ensureVisible() {
-    requestAnimationFrame(() => {
-      const el = listContainer?.querySelector(`[data-index="${selectedIndex}"]`);
-      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+  function filterEntries(rows: MemoryEntry[], text: string, tag: string | null): MemoryEntry[] {
+    const needle = text.trim().toLowerCase();
+    return rows.filter((entry) => {
+      if (tag && !entry.tags.includes(tag)) return false;
+      if (!needle) return true;
+      return (
+        entry.note.toLowerCase().includes(needle) ||
+        entry.tags.some((entryTag) => entryTag.includes(needle))
+      );
     });
   }
 
+  // ── Formatting ─────────────────────────────────────────────────────
+  const fullDateFormat = new Intl.DateTimeFormat(undefined, {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+
+  function formatFull(at: number): string {
+    return fullDateFormat.format(at);
+  }
+
+  /** Compact mono timestamp for the list column: now · 5m · 2h · 3d · 2w. */
+  function relativeShort(at: number): string {
+    const minutes = Math.round((Date.now() - at) / 60_000);
+    if (minutes < 1) return 'now';
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h`;
+    const days = Math.round(hours / 24);
+    if (days < 7) return `${days}d`;
+    const weeks = Math.round(days / 7);
+    if (weeks < 5) return `${weeks}w`;
+    const months = Math.round(days / 30);
+    if (months < 12) return `${months}mo`;
+    return `${Math.round(days / 365)}y`;
+  }
+
+  function relativeLong(at: number): string {
+    const short = relativeShort(at);
+    return short === 'now' ? 'Just now' : `${short} ago`;
+  }
+
+  function titleOf(entry: MemoryEntry): string {
+    const trimmed = entry.note.trim();
+    const firstBreak = trimmed.indexOf('\n');
+    return (firstBreak === -1 ? trimmed : trimmed.slice(0, firstBreak)).slice(0, 160);
+  }
+
+  /** Second line of a multi-line note, used when the entry has no tags. */
+  function previewOf(entry: MemoryEntry): string {
+    const trimmed = entry.note.trim();
+    const firstBreak = trimmed.indexOf('\n');
+    if (firstBreak === -1) return '';
+    return trimmed
+      .slice(firstBreak + 1)
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+  }
+
+  // ── Selection ──────────────────────────────────────────────────────
+  function select(index: number) {
+    selectedIndex = index;
+  }
+
+  function moveSelection(delta: number) {
+    if (displayed.length === 0) return;
+    selectedIndex = Math.min(displayed.length - 1, Math.max(0, selectedIndex + delta));
+  }
+
+  function scrollSelectedIntoView() {
+    const row = listEl?.querySelector<HTMLElement>(`[data-index="${selectedIndex}"]`);
+    row?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+  }
+
+  function filterByTag(tag: string) {
+    tagFilter = tagFilter === tag ? null : tag;
+    selectedIndex = 0;
+  }
+
+  // ── Launcher bridge ────────────────────────────────────────────────
   function handleMessage(event: MessageEvent) {
     if (event.source !== window.parent) return;
-    const data = event.data;
-    if (!data || typeof data !== 'object') return;
-
-    // Form is open: the user is editing text in our textarea/inputs,
-    // so ignore launcher search / list-nav keystrokes entirely.
+    const data = event.data as { type?: string; payload?: Record<string, unknown> } | null;
+    if (!data || typeof data.type !== 'string') return;
     if (mode !== 'view') return;
 
     if (data.type === 'asyar:view:search') {
-      searchText = data.payload?.query ?? '';
+      searchText = String(data.payload?.query ?? '');
+      tagFilter = null;
       selectedIndex = 0;
+      return;
     }
 
     if (data.type === 'asyar:view:keydown') {
       const key = data.payload?.key;
-      if (key === 'ArrowDown') {
-        selectedIndex = Math.min(displayed.length - 1, selectedIndex + 1);
-        ensureVisible();
-      } else if (key === 'ArrowUp') {
-        selectedIndex = Math.max(0, selectedIndex - 1);
-        ensureVisible();
-      } else if (key === 'Enter') {
-        void copyMemory();
-      }
+      if (key === 'ArrowDown') moveSelection(1);
+      else if (key === 'ArrowUp') moveSelection(-1);
+      else if (key === 'Enter') void copyMemory();
     }
   }
 
-  function fmtDate(at: number): string {
-    return new Date(at).toLocaleString(undefined, {
-      month: 'long',
-      day: 'numeric',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+  /**
+   * When focus sits inside the iframe (after clicking a row, or on the frame
+   * body once a form closes) the host never sees the key. Handle list keys
+   * here too so navigation never depends on which side of the frame boundary
+   * holds focus.
+   */
+  function handleLocalKeyDown(event: KeyboardEvent) {
+    if (mode !== 'view' || event.defaultPrevented) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+    ) {
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveSelection(1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveSelection(-1);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      void copyMemory();
+    }
   }
 
-  function firstLine(text: string): string {
-    const trimmed = text.trim();
-    const nl = trimmed.indexOf('\n');
-    return (nl === -1 ? trimmed : trimmed.slice(0, nl)).slice(0, 120);
+  // Keep the highlight inside a list that just shrank (search, filter, delete).
+  $effect(() => {
+    const length = displayed.length;
+    if (length === 0) {
+      if (selectedIndex !== 0) selectedIndex = 0;
+      return;
+    }
+    if (selectedIndex > length - 1) selectedIndex = length - 1;
+  });
+
+  $effect(() => {
+    selectedIndex;
+    if (mode !== 'view') return;
+    requestAnimationFrame(scrollSelectedIntoView);
+  });
+
+  // ── Form ───────────────────────────────────────────────────────────
+  function inlineTags(note: string): string[] {
+    return Array.from(note.matchAll(/(?:^|\s)#([\w-]+)/g), (match) => match[1]);
   }
 
-  function entryDesc(entry: MemoryEntry): string {
-    if (entry.tags.length > 0) return entry.tags.map((t) => `#${t}`).join('  ');
-    // No tags → show the second line if multi-line, otherwise empty.
-    const trimmed = entry.note.trim();
-    const nl = trimmed.indexOf('\n');
-    if (nl === -1) return '';
-    return trimmed.slice(nl + 1).slice(0, 120).trim();
+  function splitTags(input: string): string[] {
+    return input
+      .split(/[,\s]+/)
+      .map((tag) => tag.trim().replace(/^#/, ''))
+      .filter(Boolean);
   }
 
-  // ── Form helpers (snippets pattern) ───────────────────────────────
-  function startCreate() {
+  async function startCreate() {
     mode = 'create';
     formNote = '';
-    formTagsInput = '';
+    formTags = '';
     formError = null;
     editingId = null;
-    queueMicrotask(() => formNoteEl?.focus());
+    await focusFormNote();
   }
 
-  function startEdit(entry: MemoryEntry) {
+  async function startEdit(entry: MemoryEntry) {
     mode = 'edit';
     formNote = entry.note;
-    formTagsInput = entry.tags.join(' ');
+    formTags = entry.tags.join(', ');
     formError = null;
     editingId = entry.id;
-    queueMicrotask(() => formNoteEl?.focus());
+    await focusFormNote();
+  }
+
+  async function focusFormNote() {
+    await tick();
+    noteEl?.focus();
+    noteEl?.setSelectionRange(formNote.length, formNote.length);
+    resizeNote();
+  }
+
+  function resizeNote() {
+    const element = noteEl;
+    if (!element) return;
+    element.style.height = 'auto';
+    element.style.height = `${element.scrollHeight}px`;
   }
 
   function cancelForm() {
     mode = 'view';
     formNote = '';
-    formTagsInput = '';
+    formTags = '';
     formError = null;
     editingId = null;
   }
 
-  function parseFormTags(input: string): string[] {
-    const raw = input
-      .split(/[,\s]+/)
-      .map((t) => t.trim().replace(/^#/, ''))
-      .filter(Boolean);
-    return normalizeTags(raw);
-  }
-
-  async function saveForm() {
-    const note = formNote.trim();
-    if (!note) {
-      formError = 'Memory text is required.';
+  function onFormKeyDown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelForm();
       return;
     }
-    const tags = parseFormTags(formTagsInput);
-
-    if (mode === 'create') {
-      const res = (await context.request('memory.save', { note, tags })) as
-        | { saved: true; id: string; total: number }
-        | { saved: false; error: string };
-      if (!res.saved) {
-        formError = res.error;
-        return;
-      }
-      cancelForm();
-      await feedback.showHUD(
-        tags.length
-          ? `✅ Saved with ${tags.length} tag${tags.length > 1 ? 's' : ''} (total: ${res.total})`
-          : `✅ Saved (total: ${res.total})`,
-      );
-    } else if (mode === 'edit' && editingId) {
-      const res = (await context.request('memory.update', {
-        id: editingId,
-        note,
-        tags,
-      })) as { updated: true; id: string } | { updated: false; error: string };
-      if (!res.updated) {
-        formError = res.error;
-        return;
-      }
-      cancelForm();
-      await feedback.showHUD(`✅ Updated: ${note.slice(0, 40)}`);
-    }
-  }
-
-  function onFormKeyDown(ev: KeyboardEvent) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      cancelForm();
-    } else if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
-      ev.preventDefault();
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+      event.preventDefault();
       void saveForm();
     }
   }
 
-  // ── Action implementations ────────────────────────────────────────
+  async function saveForm() {
+    if (saving) return;
+    const note = formNote.trim();
+    if (!note) {
+      formError = 'Add text before saving.';
+      return;
+    }
+    const tags = normalizeTags([...splitTags(formTags), ...inlineTags(formNote)]);
+
+    saving = true;
+    try {
+      if (mode === 'create') {
+        const result = (await context.request('memory.save', { note, tags })) as
+          { saved: true; id: string; total: number } | { saved: false; error: string };
+        if (!result.saved) {
+          formError = result.error;
+          return;
+        }
+        cancelForm();
+        await feedback.showHUD('Memory saved');
+      } else if (mode === 'edit' && editingId) {
+        const result = (await context.request('memory.update', {
+          id: editingId,
+          note,
+          tags,
+        })) as { updated: true; id: string } | { updated: false; error: string };
+        if (!result.updated) {
+          formError = result.error;
+          return;
+        }
+        cancelForm();
+        await feedback.showHUD('Memory updated');
+      }
+    } finally {
+      saving = false;
+    }
+  }
+
+  // ── Actions ────────────────────────────────────────────────────────
   async function addMemory() {
-    startCreate();
+    if (mode !== 'view') return;
+    await startCreate();
   }
 
   async function editMemory() {
-    if (!selected) {
-      await feedback.showHUD('Select a memory first (↑↓ in the list)');
-      return;
-    }
-    startEdit(selected);
+    if (mode !== 'view' || !selected) return;
+    await startEdit(selected);
+  }
+
+  async function togglePin() {
+    const entry = selected;
+    if (!entry) return;
+    keepSelectionId = entry.id;
+    await context.request('memory.pin', { id: entry.id, pinned: !entry.pinned });
   }
 
   async function deleteMemory() {
-    if (!selected) {
-      await feedback.showHUD('Select a memory first (↑↓ in the list)');
-      return;
-    }
-    const preview = selected.note.slice(0, 40);
-    await context.request('memory.delete', { id: selected.id });
-    if (selectedIndex >= displayed.length - 1) {
-      selectedIndex = Math.max(0, displayed.length - 2);
-    }
-    await feedback.showHUD(`Deleted: ${preview}`);
+    const entry = selected;
+    if (!entry) return;
+    const confirmed = await feedback.confirmAlert({
+      title: 'Delete this memory?',
+      message: titleOf(entry),
+      confirmText: 'Delete',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    // Decide the neighbour before the row disappears, then let the state
+    // subscription place the highlight on it once the list shrinks.
+    const neighbourId =
+      displayed[selectedIndex + 1]?.id ?? displayed[selectedIndex - 1]?.id ?? null;
+    await context.request('memory.delete', { id: entry.id });
+    if (neighbourId) keepSelectionId = neighbourId;
+    else selectedIndex = 0;
   }
 
-  async function togglePinMemory() {
-    if (!selected) {
-      await feedback.showHUD('Select a memory first (↑↓ in the list)');
-      return;
+  async function clearAll() {
+    if (entries.length === 0) return;
+    const confirmed = await feedback.confirmAlert({
+      title: 'Clear all memories?',
+      message: `${entries.length} ${entries.length === 1 ? 'memory' : 'memories'} will be deleted. This cannot be undone.`,
+      confirmText: 'Clear all',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    await context.request('memory.clear', {});
+  }
+
+  async function writeClipboard(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Sandboxed iframes can deny the async API; fall back to execCommand.
     }
-    const nextPinned = !selected.pinned;
-    const preview = selected.note.slice(0, 40);
-    await context.request('memory.pin', { id: selected.id, pinned: nextPinned });
-    await feedback.showHUD(nextPinned ? `📌 Pinned: ${preview}` : `Unpinned: ${preview}`);
+    try {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      const copied = document.execCommand('copy');
+      area.remove();
+      return copied;
+    } catch {
+      return false;
+    }
   }
 
   async function copyMemory() {
-    if (!selected) {
-      await feedback.showHUD('Select a memory first (↑↓ in the list)');
-      return;
-    }
-    const text = selected.note;
-    // Try the modern API first; fall back to execCommand for sandboxed
-    // iframe contexts where Permissions API denies clipboard.
-    let ok = false;
-    try {
-      await navigator.clipboard.writeText(text);
-      ok = true;
-    } catch { /* try fallback */ }
-    if (!ok) {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.setAttribute('readonly', '');
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        ok = document.execCommand('copy');
-        ta.remove();
-      } catch { /* give up */ }
-    }
-    await feedback.showHUD(ok ? `Copied: ${text.slice(0, 40)}` : 'Copy failed');
+    const entry = selected;
+    if (!entry) return;
+    const copied = await writeClipboard(entry.note);
+    await feedback.showHUD(copied ? 'Copied to clipboard' : 'Copy failed');
+  }
+
+  async function copyAsMarkdown() {
+    const entry = selected;
+    if (!entry) return;
+    const markdown = [entry.note, entry.tags.map((tag) => `#${tag}`).join(' ')]
+      .filter(Boolean)
+      .join('\n\n');
+    const copied = await writeClipboard(markdown);
+    await feedback.showHUD(copied ? 'Copied as markdown' : 'Copy failed');
   }
 
   async function exportMarkdown() {
-    const md = toMarkdown(entries, new Date());
-    const today = new Date().toISOString().slice(0, 10);
-    const filename = `asyar-memory-${today}.md`;
-    // Try blob anchor download; fall back to clipboard if the sandbox
-    // blocks programmatic downloads.
+    if (entries.length === 0) return;
+    const markdown = toMarkdown(entries, new Date());
+    const filename = `asyar-memory-${new Date().toISOString().slice(0, 10)}.md`;
     let downloaded = false;
     try {
-      const blob = new Blob([md], { type: 'text/markdown' });
+      const blob = new Blob([markdown], { type: 'text/markdown' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
       URL.revokeObjectURL(url);
       downloaded = true;
-    } catch { /* try clipboard fallback */ }
-    if (downloaded) {
-      await feedback.showHUD(`Exported ${entries.length} memories → ${filename}`);
-    } else {
-      try { await navigator.clipboard.writeText(md); } catch { /* */ }
-      await feedback.showHUD(`Download blocked — markdown copied to clipboard (${entries.length} entries)`);
+    } catch {
+      // Sandbox blocked the download — clipboard is the graceful fallback.
     }
+    if (!downloaded) await writeClipboard(markdown);
+    await feedback.showHUD(
+      downloaded
+        ? `Exported ${entries.length} ${entries.length === 1 ? 'memory' : 'memories'}`
+        : 'Download blocked — markdown copied',
+    );
   }
 
-  async function forgetAll() {
-    const count = entries.length;
-    if (count === 0) {
-      await feedback.showHUD('Nothing to forget.');
-      return;
-    }
-    const now = Date.now();
-    if (now - lastForgetAt > 5000) {
-      lastForgetAt = now;
-      await feedback.showHUD(
-        `Forget all ${count} memories? ⌘K → Forget All again within 5s to confirm.`,
-      );
-      return;
-    }
-    await context.request('memory.clear', {});
-    lastForgetAt = 0;
-    await feedback.showHUD(`Forgotten ${count} memories.`);
-  }
+  // ── Lifecycle ──────────────────────────────────────────────────────
+  // Action metadata crosses the iframe boundary, so it must stay serializable:
+  // no `visible()` closures (they cannot be cloned). Actions guard themselves
+  // in `execute` instead.
+  type ViewAction = ExtensionAction & { confirmInExecute?: boolean };
 
-  // ── Lifecycle ─────────────────────────────────────────────────────
+  let keepSelectionId: string | null = null;
+  const registeredActionIds: string[] = [];
+
   onMount(() => {
     let active = true;
-    const cleanup: Array<() => void | Promise<void>> = [];
+    const cleanups: Array<() => void | Promise<void>> = [];
 
-    window.addEventListener('message', handleMessage);
-    cleanup.push(() => window.removeEventListener('message', handleMessage));
+    const onMessage = (event: MessageEvent) => handleMessage(event);
+    window.addEventListener('message', onMessage);
+    window.addEventListener('keydown', handleLocalKeyDown);
+    cleanups.push(() => window.removeEventListener('message', onMessage));
+    cleanups.push(() => window.removeEventListener('keydown', handleLocalKeyDown));
 
-    (async () => {
+    void (async () => {
       const [initial, unsubscribe] = await Promise.all([
         stateProxy.get(STATE_KEYS.entries),
-        stateProxy.subscribe(STATE_KEYS.entries, (v) => {
+        stateProxy.subscribe(STATE_KEYS.entries, (value) => {
           if (!active) return;
-          entries = Array.isArray(v) ? (v as MemoryEntry[]) : [];
-          if (selectedIndex >= displayed.length) {
-            selectedIndex = Math.max(0, displayed.length - 1);
+          const next = Array.isArray(value) ? (value as MemoryEntry[]) : [];
+          entries = next;
+          if (keepSelectionId) {
+            const fresh = groupByBucket(filterEntries(next, searchText, tagFilter)).flatMap(
+              (group) => group.entries,
+            );
+            const index = fresh.findIndex((entry) => entry.id === keepSelectionId);
+            if (index >= 0) selectedIndex = index;
+            keepSelectionId = null;
           }
         }),
       ]);
-      if (!active) { void unsubscribe(); return; }
+      if (!active) {
+        void unsubscribe();
+        return;
+      }
       entries = Array.isArray(initial) ? (initial as MemoryEntry[]) : [];
-      cleanup.push(unsubscribe);
+      cleanups.push(unsubscribe);
     })();
 
-    // View-scoped actions (visible in ⌘K while this view is mounted).
-    // Per launcher behavior: manifest `command.actions[]` are CORE-context
-    // (only shown when the command is highlighted in ROOT search). Actions
-    // that should appear while the view is open MUST be registered at
-    // runtime with ActionContext.EXTENSION_VIEW and an inline `execute`.
-    const actions = context.getService<IActionService>('actions');
-    const viewActions: ExtensionAction[] = [
+    // View-scoped actions. `manifest.actions[]` only renders in root search, so
+    // everything the user can reach while this pane is open is registered here.
+    const viewActions: ViewAction[] = [
       {
         id: `${EXTENSION_ID}:add-memory`,
-        title: 'Add Memory',
-        description: 'Save what is in the launcher search bar as a new memory. Use #tag inside the text to attach tags.',
-        icon: '➕',
+        title: 'Add memory',
+        description: 'Write a new memory. #tags inside the note are saved as tags.',
+        icon: 'icon:plus',
         category: 'Memory',
         extensionId: EXTENSION_ID,
         context: ActionContext.EXTENSION_VIEW,
+        shortcut: 'Mod+N',
         execute: addMemory,
       },
       {
         id: `${EXTENSION_ID}:edit-memory`,
-        title: 'Edit Memory',
-        description: 'Replace the selected memory text with whatever is in the launcher search bar.',
-        icon: '✏️',
+        title: 'Edit memory',
+        description: 'Edit the selected memory in place.',
+        icon: 'icon:pencil',
         category: 'Memory',
         extensionId: EXTENSION_ID,
         context: ActionContext.EXTENSION_VIEW,
+        shortcut: 'Mod+E',
         execute: editMemory,
       },
       {
-        id: `${EXTENSION_ID}:delete-memory`,
-        title: 'Delete Memory',
-        description: 'Delete the currently selected memory.',
-        icon: '🗑️',
-        category: 'Memory',
-        extensionId: EXTENSION_ID,
-        context: ActionContext.EXTENSION_VIEW,
-        execute: deleteMemory,
-      },
-      {
         id: `${EXTENSION_ID}:pin-memory`,
-        title: 'Pin or Unpin Memory',
-        description: 'Toggle pin on the selected memory. Pinned entries never auto-evict.',
-        icon: '📌',
+        title: 'Pin or unpin memory',
+        description: 'Pinned memories are never evicted by the 1000-entry cap.',
+        icon: 'icon:pin',
         category: 'Memory',
         extensionId: EXTENSION_ID,
         context: ActionContext.EXTENSION_VIEW,
-        execute: togglePinMemory,
+        shortcut: 'Mod+Shift+P',
+        execute: togglePin,
       },
       {
         id: `${EXTENSION_ID}:copy-memory`,
-        title: 'Copy Memory',
-        description: 'Copy the selected memory text to the clipboard.',
-        icon: '📋',
+        title: 'Copy memory',
+        description: 'Copy the selected note text to the clipboard.',
+        icon: 'icon:copy',
         category: 'Memory',
         extensionId: EXTENSION_ID,
         context: ActionContext.EXTENSION_VIEW,
         execute: copyMemory,
       },
       {
-        id: `${EXTENSION_ID}:export-md`,
-        title: 'Export as Markdown',
+        id: `${EXTENSION_ID}:copy-markdown`,
+        title: 'Copy as markdown',
+        description: 'Copy the selected memory as markdown with its #tags.',
+        icon: 'icon:copy',
+        category: 'Memory',
+        extensionId: EXTENSION_ID,
+        context: ActionContext.EXTENSION_VIEW,
+        shortcut: 'Mod+Shift+C',
+        execute: copyAsMarkdown,
+      },
+      {
+        id: `${EXTENSION_ID}:delete-memory`,
+        title: 'Delete memory',
+        description: 'Delete the selected memory after confirming.',
+        icon: 'icon:trash',
+        category: 'Memory',
+        extensionId: EXTENSION_ID,
+        context: ActionContext.EXTENSION_VIEW,
+        shortcut: 'Control+X',
+        destructive: true,
+        confirmInExecute: true,
+        execute: deleteMemory,
+      },
+      {
+        id: `${EXTENSION_ID}:export-markdown`,
+        title: 'Export as markdown',
         description: 'Download every memory as a single markdown file.',
-        icon: '📥',
+        icon: 'icon:download',
         category: 'Memory',
         extensionId: EXTENSION_ID,
         context: ActionContext.EXTENSION_VIEW,
         execute: exportMarkdown,
       },
       {
-        id: `${EXTENSION_ID}:forget-all`,
-        title: 'Forget All Memories',
-        description: 'Wipe every memory including pinned. Press twice within 5s to confirm.',
-        icon: '💥',
+        id: `${EXTENSION_ID}:clear-memories`,
+        title: 'Clear all memories',
+        description: 'Delete everything, including pinned memories, after confirming.',
+        icon: 'icon:trash',
         category: 'Memory',
         extensionId: EXTENSION_ID,
         context: ActionContext.EXTENSION_VIEW,
-        execute: forgetAll,
+        shortcut: 'Control+Shift+X',
+        destructive: true,
+        confirmInExecute: true,
+        execute: clearAll,
       },
     ];
 
     for (const action of viewActions) {
       actions.registerAction(action);
+      registeredActionIds.push(action.id);
     }
 
     return () => {
       active = false;
-      for (const fn of cleanup) {
-        try { void fn(); } catch { /* */ }
+      for (const id of registeredActionIds) actions.unregisterAction(id);
+      registeredActionIds.length = 0;
+      for (const cleanup of cleanups) {
+        try {
+          void cleanup();
+        } catch {
+          // Teardown only — nothing left to report to.
+        }
       }
     };
   });
 </script>
 
-<div class="container">
-  <div class="split-view">
-    <!-- Left: Memory list -->
-    <div
-      class="doc-list"
-      bind:this={listContainer}
-      tabindex="0"
-      role="listbox"
-      aria-label="Memories"
-    >
+<div class="memory">
+  <aside class="list-pane" aria-label="Memories">
+    {#if tagFilter}
+      <div class="tag-filter">
+        <span class="tag-filter-label">Filtering</span>
+        <span class="tag-pill">#{tagFilter}</span>
+        <button
+          class="tag-filter-clear"
+          type="button"
+          aria-label="Clear tag filter"
+          onclick={() => {
+            tagFilter = null;
+            selectedIndex = 0;
+          }}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <path
+              d="M1 1l8 8M9 1l-8 8"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+      </div>
+    {/if}
+
+    <div class="list-scroll" bind:this={listEl} role="listbox" aria-label="Memory list">
       {#if displayed.length === 0}
-        <div class="empty-state">
+        <div class="list-empty">
           {#if entries.length === 0}
-            <span class="empty-icon">🧠</span>
-            <span>No memories yet.</span>
-            <span class="empty-hint">
-              Ask your AI to remember something, or type a memory above and press
-              <kbd>⌘K</kbd> → <em>Add Memory</em>.
-            </span>
+            <svg class="empty-glyph" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M5 4.5h9.5L19 9v10.5H5z M14 4.5V9h5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <p class="empty-title">No memories yet</p>
+            <p class="empty-hint">
+              Ask an agent to remember something, or press
+              <kbd>{IS_MAC ? '⌘N' : 'Ctrl+N'}</kbd> to write one.
+            </p>
           {:else}
-            <span class="empty-icon">🔍</span>
-            <span>No results for "{searchText}"</span>
+            <p class="empty-title">Nothing matches</p>
+            <p class="empty-hint">
+              {#if tagFilter}No entry is tagged #{tagFilter}.{:else}No memory contains “{searchText}”.{/if}
+            </p>
           {/if}
         </div>
       {:else}
-        {#each grouped as group, groupIdx (group.name)}
-          <div class="section-header">{group.name}</div>
-          {#each group.entries as entry, itemIdx (entry.id)}
-            {@const idx = flatIndex(groupIdx, itemIdx)}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_interactive_supports_focus -->
-            <div
-              data-index={idx}
-              class="doc-item"
-              class:selected={selectedIndex === idx}
-              role="option"
-              aria-selected={selectedIndex === idx}
-              onclick={() => {
-                if (mode !== 'view') cancelForm();
-                selectedIndex = idx;
-              }}
-            >
-              <div class="doc-title">{firstLine(entry.note)}</div>
-              <div class="doc-desc">{entryDesc(entry) || ' '}</div>
-            </div>
-          {/each}
+        {#each grouped as group (group.name)}
+          <div class="section" role="group" aria-label={group.name}>
+            <div class="section-header">{group.name}</div>
+            {#each group.entries as entry (entry.id)}
+              {@const index = indexById.get(entry.id) ?? 0}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="row"
+                class:selected={selectedIndex === index}
+                data-index={index}
+                role="option"
+                tabindex="-1"
+                aria-selected={selectedIndex === index}
+                onclick={() => {
+                  if (mode !== 'view') cancelForm();
+                  select(index);
+                }}
+              >
+                <span
+                  class="row-pin"
+                  aria-hidden={!entry.pinned}
+                  aria-label={entry.pinned ? 'Pinned' : undefined}
+                >
+                  {#if entry.pinned}
+                    <svg viewBox="0 0 12 12" aria-hidden="true">
+                      <path
+                        d="M4 1.5h4l-.6 2.4 1.7 1.8H2.9l1.7-1.8z M6 5.7v4.8"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.1"
+                        stroke-linejoin="round"
+                        stroke-linecap="round"
+                      />
+                    </svg>
+                  {/if}
+                </span>
+                <span class="row-main">
+                  <span class="row-title">{titleOf(entry)}</span>
+                  <span class="row-meta">
+                    {#if entry.tags.length > 0}
+                      {#each entry.tags.slice(0, 2) as tag (tag)}
+                        <span class="tag-pill">#{tag}</span>
+                      {/each}
+                      {#if entry.tags.length > 2}
+                        <span class="tag-more">+{entry.tags.length - 2}</span>
+                      {/if}
+                    {:else if previewOf(entry)}
+                      <span class="row-preview">{previewOf(entry)}</span>
+                    {/if}
+                  </span>
+                </span>
+                <span class="row-time">{relativeShort(entry.at)}</span>
+              </div>
+            {/each}
+          </div>
         {/each}
       {/if}
     </div>
+  </aside>
 
-    <!-- Right: Detail panel OR inline form (snippets-pattern) -->
-    <div class="detail-panel">
-      {#if mode === 'create' || mode === 'edit'}
-        <!-- Inline form (mirrors built-in snippets) -->
-        <div class="form-panel" onkeydown={onFormKeyDown} role="form">
-          <div class="form-header">
-            <h2 class="form-title">{mode === 'edit' ? 'Edit Memory' : 'New Memory'}</h2>
-            {#if mode === 'edit' && editingId}
-              {@const editingEntry = entries.find((e) => e.id === editingId)}
-              {#if editingEntry}
-                <div class="form-subtitle">
-                  Editing memory saved {fmtDate(editingEntry.at)}
-                  · <code class="form-subtitle-id">{editingId.slice(0, 8)}…</code>
-                </div>
-              {/if}
-            {/if}
+  <section class="detail-pane" aria-label="Memory">
+    {#if mode === 'view'}
+      {#if selected}
+        <header class="detail-header">
+          <div class="detail-meta">
+            <span class="detail-relative">{relativeLong(selected.at)}</span>
+            <span class="detail-separator" aria-hidden="true">·</span>
+            <span class="detail-date">{formatFull(selected.at)}</span>
           </div>
-          <div class="form-body">
-            <div class="form-field">
-              <label class="form-label" for="memory-note">Memory</label>
-              <textarea
-                id="memory-note"
-                class="field-textarea"
-                bind:value={formNote}
-                bind:this={formNoteEl}
-                placeholder="e.g. Prefers dark roast coffee in the morning"
-                rows="5"
-              ></textarea>
-            </div>
-            <div class="form-field">
-              <label class="form-label" for="memory-tags">Tags <span class="form-hint">(space-separated, optional)</span></label>
-              <input
-                id="memory-tags"
-                class="field-input"
-                type="text"
-                bind:value={formTagsInput}
-                placeholder="e.g. preferences food"
-              />
-              <p class="form-help">Trim + lowercase, max 5 tags, max 32 chars each. # is optional.</p>
-            </div>
-            {#if formError}
-              <div class="form-error">{formError}</div>
-            {/if}
-          </div>
-          <div class="form-footer">
-            <span class="form-shortcut-hint">⌘↵ to save · Esc to cancel</span>
-            <div class="form-buttons">
-              <button class="btn-secondary" type="button" onclick={cancelForm}>Cancel</button>
-              <button class="btn-primary" type="button" onclick={saveForm}>{mode === 'edit' ? 'Save' : 'Add'}</button>
-            </div>
-          </div>
-        </div>
-      {:else if !selected}
-        <div class="detail-empty">
-          <span class="detail-empty-icon">🧠</span>
-          <span>Select a memory to see details</span>
-        </div>
-      {:else}
-        <div class="doc-header">
-          <h2>{firstLine(selected.note)}</h2>
-          <div class="meta">
-            <span class="doc-path">{fmtDate(selected.at)}</span>
-            {#if selected.pinned}
-              <span class="pin-badge">📌 Pinned</span>
-            {/if}
-          </div>
-        </div>
-        <div class="detail-content">
-          {#if selected.note.includes('\n') || selected.note.length > 120}
-            <p class="full-note">{selected.note}</p>
+          {#if selected.pinned}
+            <span class="pin-flag">
+              <svg viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M4 1.5h4l-.6 2.4 1.7 1.8H2.9l1.7-1.8z M6 5.7v4.8"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.1"
+                  stroke-linejoin="round"
+                  stroke-linecap="round"
+                />
+              </svg>
+              Pinned
+            </span>
           {/if}
+        </header>
+
+        <div class="detail-scroll">
+          <div class="md-body">{@html selectedBody}</div>
           {#if selected.tags.length > 0}
-            <div class="detail-section">
-              <div class="detail-section-label">Tags</div>
-              <div class="detail-tags">
-                {#each selected.tags as t}
-                  <span class="detail-tag">#{t}</span>
-                {/each}
-              </div>
+            <div class="tag-cluster">
+              {#each selected.tags as tag (tag)}
+                <button
+                  class="tag-pill interactive"
+                  type="button"
+                  onclick={() => filterByTag(tag)}
+                  aria-pressed={tagFilter === tag}
+                >
+                  #{tag}
+                </button>
+              {/each}
             </div>
           {/if}
-          <div class="detail-section">
-            <div class="detail-section-label">ID</div>
-            <code class="detail-id">{selected.id}</code>
-          </div>
+        </div>
+
+        <footer class="detail-footer">
+          <span class="hint"><kbd>{HINT.copy}</kbd> Copy</span>
+          <span class="hint"><kbd>{HINT.edit}</kbd> Edit</span>
+          <span class="hint"><kbd>{HINT.pin}</kbd> {selected.pinned ? 'Unpin' : 'Pin'}</span>
+          <span class="hint"><kbd>{HINT.delete}</kbd> Delete</span>
+        </footer>
+      {:else}
+        <div class="detail-empty">
+          <svg class="empty-glyph" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M5 4.5h9.5L19 9v10.5H5z M14 4.5V9h5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <p class="empty-title">
+            {entries.length === 0 ? 'Nothing saved yet' : 'No memory selected'}
+          </p>
+          <p class="empty-hint">
+            {entries.length === 0
+              ? 'Memories written by an agent appear here.'
+              : 'Pick a memory on the left, or press ' +
+                (IS_MAC ? '⌘N' : 'Ctrl+N') +
+                ' to add one.'}
+          </p>
         </div>
       {/if}
-    </div>
-  </div>
+    {:else}
+      <div class="form">
+        <header class="form-header">
+          <h2 class="form-title">{mode === 'edit' ? 'Edit memory' : 'Add memory'}</h2>
+          {#if mode === 'edit' && editingEntry}
+            <p class="form-subtitle">
+              Saved {formatFull(editingEntry.at)}
+              <code class="form-id">{editingEntry.id.slice(0, 8)}</code>
+            </p>
+          {/if}
+        </header>
+
+        <div class="form-body">
+          <div class="field">
+            <label class="field-label" for="memory-note">Memory</label>
+            <textarea
+              id="memory-note"
+              class="field-textarea"
+              bind:value={formNote}
+              bind:this={noteEl}
+              oninput={resizeNote}
+              onkeydown={onFormKeyDown}
+              placeholder="Prefers dark roast coffee in the morning"
+              rows="4"
+              spellcheck="true"></textarea>
+          </div>
+
+          <div class="field">
+            <label class="field-label" for="memory-tags">Tags</label>
+            <input
+              id="memory-tags"
+              class="field-input"
+              type="text"
+              bind:value={formTags}
+              onkeydown={onFormKeyDown}
+              placeholder="preferences, food"
+            />
+            <p class="field-help">Comma separated, up to 5. #tags inside the note are saved too.</p>
+          </div>
+
+          {#if formError}
+            <p class="form-error" role="alert">{formError}</p>
+          {/if}
+        </div>
+
+        <footer class="form-footer">
+          <span class="hint"><kbd>{HINT.save}</kbd> Save</span>
+          <div class="form-actions">
+            <button class="btn-secondary" type="button" onclick={cancelForm}>Cancel</button>
+            <button class="btn-primary" type="button" onclick={saveForm} disabled={saving}>
+              Save
+            </button>
+          </div>
+        </footer>
+      </div>
+    {/if}
+  </section>
 </div>
 
 <style>
@@ -634,327 +890,483 @@
     width: 100%;
   }
 
-  .container {
+  .memory {
+    display: flex;
     width: 100%;
     height: 100%;
-    display: flex;
-    flex-direction: column;
-    font-family: var(--font-ui);
-    color: var(--text-primary);
-    background: transparent;
-  }
-
-  .split-view {
-    display: flex;
-    flex: 1;
     min-height: 0;
     overflow: hidden;
+    background: var(--bg-primary);
+    font-family: var(--font-ui);
+    color: var(--text-primary);
   }
 
-  .doc-list {
-    width: 280px;
-    min-width: 220px;
-    overflow-y: auto;
+  /* ── Left: memory list ─────────────────────────────────────────── */
+  .list-pane {
+    display: flex;
+    flex-direction: column;
+    width: 300px;
+    min-width: 260px;
+    min-height: 0;
     border-right: 1px solid var(--separator);
-    padding: var(--space-1) 0;
+  }
+
+  .tag-filter {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--divider-soft);
+  }
+  .tag-filter-label {
+    font-size: var(--font-size-xs);
+    color: var(--text-tertiary);
+  }
+  .tag-filter-clear {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--size-md);
+    height: var(--size-md);
+    margin-left: auto;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-xs);
     background: transparent;
+    color: var(--text-tertiary);
+    cursor: default;
+  }
+  .tag-filter-clear:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .list-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding-bottom: var(--space-3);
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
-  }
-  .doc-list:focus-visible {
-    outline: none;
-    box-shadow: inset var(--shadow-focus);
   }
 
   .section-header {
-    padding: var(--space-3) var(--space-6) var(--space-1);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: var(--space-4) var(--space-5) var(--space-1-5);
     font-size: var(--font-size-xs);
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-tertiary);
+    letter-spacing: var(--tracking-normal);
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    backdrop-filter: blur(12px);
     user-select: none;
   }
 
-  .doc-item {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: var(--space-3) var(--space-5);
-    margin: 0 var(--space-2) 1px;
-    border-radius: var(--radius-xl);
+  .row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: var(--space-2);
+    height: 44px;
+    margin: 0 var(--space-2);
+    padding: 0 var(--space-3);
+    border-radius: var(--radius-md);
+    box-sizing: border-box;
     cursor: default;
     transition: background var(--transition-fast);
   }
-
-  .doc-item:hover {
+  .row:hover {
     background: var(--bg-hover);
   }
-
-  .doc-item.selected {
+  .row.selected {
     background: var(--bg-selected);
-    box-shadow: inset 0 0 2px 0.5px var(--kbd-rim);
+    transition: none;
   }
 
-  .doc-title {
-    font-size: var(--font-size-md);
-    font-weight: 500;
-    line-height: 1.3;
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .doc-desc {
-    font-size: var(--font-size-xs);
-    line-height: 1.3;
-    color: var(--text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .detail-panel {
-    flex: 1;
-    overflow-y: auto;
-    background: transparent;
-    display: flex;
-    flex-direction: column;
-    scrollbar-width: thin;
-    scrollbar-color: var(--scrollbar-thumb) transparent;
-  }
-
-  .doc-header {
-    background: transparent;
-    padding: var(--space-8) var(--space-9) var(--space-6);
-    border-bottom: 1px solid var(--separator);
-    position: sticky;
-    top: 0;
-    z-index: 10;
-  }
-
-  .doc-header h2 {
-    margin: 0 0 var(--space-3);
-    font-size: var(--font-size-2xl);
-    font-weight: 600;
-    line-height: 1.3;
-    color: var(--text-primary);
-    letter-spacing: -0.01em;
-  }
-
-  .doc-header .meta {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: var(--space-5);
-  }
-
-  .doc-path {
-    font-size: var(--font-size-md);
-    color: var(--text-secondary);
-    font-family: var(--font-mono);
-    background: var(--bg-tertiary);
-    padding: var(--space-1) var(--space-3);
-    border-radius: var(--radius-xs);
-  }
-
-  .pin-badge {
-    font-size: var(--font-size-sm);
-    color: var(--accent-warning);
-    padding: var(--space-1) var(--space-3);
-    border-radius: var(--radius-xs);
-    background: color-mix(in srgb, var(--accent-warning) 12%, transparent);
-  }
-
-  .detail-content {
-    padding: var(--space-8) var(--space-9);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-7);
-  }
-
-  .full-note {
-    margin: 0;
-    font-size: var(--font-size-lg);
-    line-height: 1.6;
-    color: var(--text-primary);
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  .detail-section {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
-
-  .detail-section-label {
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-tertiary);
-  }
-
-  .detail-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-3);
-  }
-
-  .detail-tag {
-    font-size: var(--font-size-md);
-    color: var(--accent-primary);
-    background: var(--asyar-brand-muted);
-    padding: 2px var(--space-3);
-    border-radius: var(--radius-xs);
-  }
-
-  .detail-id {
-    font-size: var(--font-size-sm);
-    color: var(--text-secondary);
-    font-family: var(--font-mono);
-    background: var(--bg-tertiary);
-    padding: var(--space-1) var(--space-3);
-    border-radius: var(--radius-xs);
-    word-break: break-all;
-    align-self: flex-start;
-  }
-
-  .empty-state {
-    display: flex;
-    flex-direction: column;
+  .row-pin {
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    height: 100%;
-    gap: var(--space-3);
-    color: var(--text-secondary);
+    width: var(--size-xs);
+    color: var(--accent-warning);
+  }
+  .row-pin svg {
+    width: var(--size-xs);
+    height: var(--size-xs);
+  }
+
+  .row-main {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+  .row-title {
+    overflow: hidden;
     font-size: var(--font-size-md);
-    padding: var(--space-10) var(--space-7);
-    text-align: center;
+    font-weight: 500;
+    line-height: 1.35;
+    color: var(--text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-
-  .empty-icon {
-    font-size: var(--font-size-3xl);
-    opacity: 0.6;
+  .row-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
   }
-
-  .empty-hint {
-    font-size: var(--font-size-sm);
-    color: var(--text-tertiary);
-    line-height: 1.5;
-  }
-
-  .empty-hint kbd {
-    font-family: var(--font-mono);
+  .row-preview {
+    overflow: hidden;
     font-size: var(--font-size-xs);
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    border: 0.5px solid var(--border-color);
-    border-radius: var(--radius-xs);
-    padding: 1px var(--space-2);
+    line-height: 1.35;
+    color: var(--text-tertiary);
+    text-overflow: ellipsis;
+  }
+  .row-time {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-2xs);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-tertiary);
   }
 
+  .tag-pill {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 0 var(--space-1);
+    border: 1px solid transparent;
+    border-radius: var(--radius-xs);
+    background: var(--bg-tertiary);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-2xs);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.5;
+    color: var(--text-tertiary);
+  }
+  .tag-more {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-2xs);
+    color: var(--text-tertiary);
+  }
+
+  .list-empty,
   .detail-empty {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: var(--space-3);
     height: 100%;
-    gap: var(--space-5);
+    padding: var(--space-9) var(--space-6);
+    text-align: center;
+  }
+  .empty-glyph {
+    width: var(--size-2xl);
+    height: var(--size-2xl);
+    color: var(--text-tertiary);
+    opacity: 0.7;
+  }
+  .empty-title {
+    margin: 0;
+    font-size: var(--font-size-md);
+    font-weight: 500;
     color: var(--text-secondary);
-    font-size: var(--font-size-base);
+  }
+  .empty-hint {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+    color: var(--text-tertiary);
+    max-width: 32ch;
   }
 
-  .detail-empty-icon {
-    font-size: var(--font-size-display);
-    opacity: 0.5;
-  }
-
-  .form-panel {
+  /* ── Right: detail ──────────────────────────────────────────────── */
+  .detail-pane {
     display: flex;
+    flex: 1;
     flex-direction: column;
-    height: 100%;
-    background: transparent;
+    min-width: 0;
+    min-height: 0;
+    background: var(--bg-secondary);
   }
-  .form-header {
-    padding: var(--space-8) var(--space-9) 0;
+
+  .detail-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-5);
     flex-shrink: 0;
+    padding: var(--space-7) var(--space-8) var(--space-3);
   }
-  .form-title {
-    margin: 0 0 var(--space-1);
-    font-size: var(--font-size-2xl);
-    font-weight: 600;
-    color: var(--text-primary);
-    letter-spacing: -0.01em;
-  }
-  .form-subtitle {
-    margin: 0 0 var(--space-6);
+  .detail-meta {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    min-width: 0;
     font-size: var(--font-size-sm);
     color: var(--text-tertiary);
   }
-  .form-subtitle-id {
+  .detail-relative {
     font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-    background: var(--bg-tertiary);
+    font-variant-numeric: tabular-nums;
     color: var(--text-secondary);
-    padding: 1px var(--space-2);
-    border-radius: var(--radius-xs);
   }
-  .form-body {
+  .detail-separator {
+    color: var(--text-tertiary);
+  }
+  .detail-date {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pin-flag {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    flex-shrink: 0;
+    font-size: var(--font-size-xs);
+    color: var(--accent-warning);
+  }
+  .pin-flag svg {
+    width: var(--size-xs);
+    height: var(--size-xs);
+  }
+
+  .detail-scroll {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
-    padding: 0 var(--space-9) var(--space-8);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-7);
+    padding: var(--space-4) var(--space-8) var(--space-9);
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
   }
-  .form-field {
+
+  .tag-cluster {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-7);
+    padding-top: var(--space-5);
+    border-top: 1px solid var(--divider-soft);
+  }
+  .tag-pill.interactive {
+    padding: 1px var(--space-2);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    cursor: default;
+  }
+  .tag-pill.interactive:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+  .tag-pill.interactive[aria-pressed='true'] {
+    border-color: var(--border-color);
+    color: var(--text-primary);
+  }
+
+  .detail-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-4);
+    flex-shrink: 0;
+    padding: var(--space-3) var(--space-8);
+    border-top: 1px solid var(--separator);
+    background: var(--bg-secondary);
+  }
+  .hint {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1-5);
+    font-size: var(--font-size-xs);
+    color: var(--text-tertiary);
+  }
+  kbd {
+    padding: 1px var(--space-1);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-xs);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-2xs);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+  }
+
+  /* ── Rendered markdown ──────────────────────────────────────────── */
+  .md-body {
+    font-size: var(--font-size-base);
+    line-height: 1.55;
+    color: var(--text-primary);
+    word-break: break-word;
+  }
+  .md-body :global(.md-paragraph) {
+    margin: 0 0 var(--space-5);
+  }
+  .md-body :global(.md-paragraph:last-child) {
+    margin-bottom: 0;
+  }
+  .md-body :global(.md-heading) {
+    margin: var(--space-7) 0 var(--space-3);
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: var(--tracking-tight);
+    color: var(--text-primary);
+  }
+  .md-body :global(h2.md-heading) {
+    font-size: var(--font-size-xl);
+  }
+  .md-body :global(h3.md-heading) {
+    font-size: var(--font-size-lg);
+  }
+  .md-body :global(h4.md-heading),
+  .md-body :global(h5.md-heading),
+  .md-body :global(h6.md-heading) {
+    font-size: var(--font-size-base);
+    color: var(--text-secondary);
+  }
+  .md-body :global(strong) {
+    font-weight: 600;
+  }
+  .md-body :global(.md-list) {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin: 0 0 var(--space-5);
+    padding-left: var(--space-7);
+  }
+  .md-body :global(.md-item) {
+    line-height: 1.55;
+  }
+  .md-body :global(.md-code) {
+    margin: 0 0 var(--space-5);
+    padding: var(--space-5);
+    overflow-x: auto;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+  }
+  .md-body :global(.md-code code) {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
+    color: var(--text-primary);
+    white-space: pre;
+  }
+  .md-body :global(.md-inline-code) {
+    padding: 1px var(--space-1-5);
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-xs);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+  }
+  .md-body :global(.md-quote) {
+    margin: 0 0 var(--space-5);
+    padding-left: var(--space-5);
+    border-left: 2px solid var(--border-color);
+    color: var(--text-secondary);
+  }
+  .md-body :global(.md-rule) {
+    margin: var(--space-6) 0;
+    border: none;
+    border-top: 1px solid var(--separator);
+  }
+  .md-body :global(.md-link) {
+    color: var(--accent-primary);
+    text-decoration: none;
+  }
+  .md-body :global(.md-link:hover) {
+    text-decoration: underline;
+  }
+  .md-body :global(.md-tag) {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+  }
+  .md-body :global(del) {
+    color: var(--text-tertiary);
+  }
+
+  /* ── Inline form ────────────────────────────────────────────────── */
+  .form {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+  }
+  .form-header {
+    flex-shrink: 0;
+    padding: var(--space-7) var(--space-8) var(--space-4);
+  }
+  .form-title {
+    margin: 0;
+    font-size: var(--font-size-xl);
+    font-weight: 600;
+    letter-spacing: var(--tracking-tight);
+    color: var(--text-primary);
+  }
+  .form-subtitle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: var(--space-2) 0 0;
+    font-size: var(--font-size-sm);
+    color: var(--text-tertiary);
+  }
+  .form-id {
+    padding: 1px var(--space-1-5);
+    border-radius: var(--radius-xs);
+    background: var(--bg-tertiary);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-2xs);
+    color: var(--text-secondary);
+  }
+
+  .form-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: var(--space-6);
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 var(--space-8) var(--space-7);
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+  .field {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
   }
-  .form-label {
+  .field-label {
     font-size: var(--font-size-sm);
     font-weight: 600;
     color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .form-hint {
-    font-weight: 400;
-    text-transform: none;
-    letter-spacing: 0;
-    color: var(--text-tertiary);
-    margin-left: var(--space-1);
-  }
-  .form-help {
-    margin: var(--space-1) 0 0;
-    font-size: var(--font-size-xs);
-    color: var(--text-tertiary);
-    line-height: 1.4;
   }
   .field-input,
   .field-textarea {
     width: 100%;
-    padding: 7px var(--space-4);
-    background: var(--bg-secondary-full-opacity);
+    box-sizing: border-box;
+    padding: var(--space-3) var(--space-4);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
     color: var(--text-primary);
-    font-size: var(--font-size-base);
     font-family: var(--font-ui);
-    box-sizing: border-box;
-    line-height: 1.5;
+    font-size: var(--font-size-base);
+    line-height: 1.55;
     outline: none;
-    transition: border-color var(--transition-fast);
+    transition:
+      border-color var(--transition-fast),
+      box-shadow var(--transition-fast);
   }
   .field-textarea {
-    resize: vertical;
-    min-height: 100px;
+    min-height: 96px;
+    max-height: 45vh;
+    overflow-y: auto;
+    resize: none;
   }
   .field-input::placeholder,
   .field-textarea::placeholder {
@@ -963,61 +1375,71 @@
   .field-input:focus,
   .field-textarea:focus {
     border-color: var(--accent-primary);
+    box-shadow: var(--shadow-focus);
+  }
+  .field-help {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    line-height: 1.45;
+    color: var(--text-tertiary);
   }
   .form-error {
-    padding: var(--space-3) var(--space-5);
-    background: color-mix(in srgb, var(--accent-danger) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent-danger) 30%, transparent);
+    margin: 0;
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid color-mix(in srgb, var(--accent-danger) 32%, transparent);
     border-radius: var(--radius-sm);
-    color: var(--accent-danger);
+    background: color-mix(in srgb, var(--accent-danger) 12%, transparent);
     font-size: var(--font-size-sm);
+    color: var(--accent-danger);
   }
+
   .form-footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-5);
-    padding: var(--space-5-5) var(--space-9);
-    border-top: 1px solid var(--separator);
     flex-shrink: 0;
+    padding: var(--space-4) var(--space-8);
+    border-top: 1px solid var(--separator);
   }
-  .form-shortcut-hint {
-    font-size: var(--font-size-xs);
-    color: var(--text-tertiary);
-  }
-  .form-buttons {
+  .form-actions {
     display: flex;
-    gap: var(--space-3);
+    gap: var(--space-2);
   }
   .btn-primary,
   .btn-secondary {
-    padding: var(--space-2) var(--space-6);
+    padding: var(--space-2) var(--space-5);
     border-radius: var(--radius-sm);
+    font-family: var(--font-ui);
     font-size: var(--font-size-md);
     font-weight: 500;
-    cursor: pointer;
-    font-family: var(--font-ui);
-    transition: background var(--transition-fast), opacity var(--transition-fast);
+    cursor: default;
+    transition:
+      background var(--transition-fast),
+      opacity var(--transition-fast);
   }
   .btn-primary {
-    background: var(--accent-primary);
-    color: white;
-    border: none;
+    border: 1px solid transparent;
+    background: var(--accent-primary-fill);
+    color: var(--text-on-accent);
   }
-  .btn-primary:hover { opacity: 0.9; }
-  .btn-primary:focus-visible {
-    outline: none;
-    box-shadow: var(--shadow-focus);
+  .btn-primary:hover {
+    opacity: 0.92;
+  }
+  .btn-primary:disabled {
+    opacity: 0.5;
   }
   .btn-secondary {
+    border: 1px solid var(--border-color);
     background: transparent;
     color: var(--text-primary);
-    border: 1px solid var(--border-color);
   }
   .btn-secondary:hover {
     background: var(--bg-hover);
   }
-  .btn-secondary:focus-visible {
+  .btn-primary:focus-visible,
+  .btn-secondary:focus-visible,
+  .tag-pill.interactive:focus-visible {
     outline: none;
     box-shadow: var(--shadow-focus);
   }
