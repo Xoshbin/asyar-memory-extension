@@ -110,11 +110,7 @@ Pinned entries are never auto-evicted regardless of count.
 
 ## Install
 
-From the Asyar Store, or via the Asyar CLI:
-
-```bash
-asyar install org.asyar.memory
-```
+Install from the [Asyar Store](https://asyar.org/extensions).
 
 Then open the **Agent editor** in the launcher and enable the
 `memory_*` tools for any agent that should be able to use them.
